@@ -1,0 +1,19 @@
+[package]
+name = "p2p"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common          = { path = "../common" }
+async-trait     = { workspace = true }
+anyhow          = { workspace = true }
+tokio           = { workspace = true }
+tracing         = { workspace = true }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
+futures         = { workspace = true }
+libp2p = { version = "0.54", features = [
+  "kad", "gossipsub", "noise", "yamux", "quic",
+  "identify", "ping", "mdns", "autonat",
+  "macros", "tokio",
+]}

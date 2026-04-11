@@ -1,0 +1,37 @@
+[workspace]
+members = [
+  "crates/node",
+  "crates/p2p",
+  "crates/inference",
+  "crates/context",
+  "crates/storage",
+  "crates/blockchain-iface",
+  "crates/common",
+]
+resolver = "2"
+
+[workspace.dependencies]
+tokio              = { version = "1", features = ["full"] }
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+serde              = { version = "1", features = ["derive"] }
+serde_json         = "1"
+anyhow             = "1"
+thiserror          = "1"
+uuid               = { version = "1", features = ["v4", "serde"] }
+chrono             = { version = "0.4", features = ["serde"] }
+async-trait        = "0.1"
+toml               = "0.8"
+reqwest            = { version = "0.12", features = ["json", "stream"] }
+bytes              = "1"
+futures            = "0.3"
+prost              = "0.13"
+aes-gcm            = "0.10"
+x25519-dalek       = { version = "2", features = ["static_secrets"] }
+rand               = "0.8"
+sha2               = "0.10"
+hex                = "0.4"
+clap               = { version = "4", features = ["derive"] }
+prometheus         = "0.13"
+axum               = "0.7"
+tokio-util         = { version = "0.7", features = ["codec"] }
