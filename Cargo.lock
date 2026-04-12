@@ -542,13 +542,16 @@ dependencies = [
  "blockchain-iface",
  "common",
  "futures",
+ "inference",
  "rand 0.8.5",
  "serde",
  "serde_json",
  "sha2",
  "tokio",
  "tracing",
+ "uuid",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]
