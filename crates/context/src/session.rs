@@ -3,8 +3,8 @@
 //! ## How session persistence works
 //!
 //! ```text
-//!  Client device                Walrus (decentralised storage)
-//!  ─────────────                ──────────────────────────────
+//!  Client device                Storage backend (Walrus or local file)
+//!  ─────────────                ──────────────────────────────────────
 //!  SessionKey (stays local)
 //!       │
 //!       │  encrypt(SessionContext)
@@ -19,15 +19,20 @@
 //!  SessionContext  (full conversation history)
 //! ```
 //!
-//! The blob ID is stored on-chain (via `BlockchainClient::set_session_index_blob`)
-//! so the user can find their sessions from any device.
+//! ## Session index — blockchain is OPTIONAL
 //!
-//! ## Session index
+//! Each user has one "session index" blob — an encrypted JSON array of
+//! `SessionSummary` entries. The blob ID pointer is stored in one of:
 //!
-//! Each user has one "session index" blob — a JSON array of `SessionSummary`
-//! entries. Its blob ID is stored on-chain. When a session is created or
-//! updated, we re-encrypt and re-upload the index, then update the on-chain
-//! pointer.
+//! 1. **Local map** (`LocalIndexStore`) — in-memory hash, no external deps.
+//!    Used in standalone mode. Pointer is lost on restart unless the daemon
+//!    also writes it to `~/.deai/sessions/_index.json` (Phase 6).
+//!
+//! 2. **Blockchain** (`ChainIndexStore`) — pointer stored on-chain.
+//!    Fully portable: recover from any device with just wallet + session key.
+//!    Used only when `mode = network_paid`.
+//!
+//! The `SessionManager` never cares which store is used.
 
 use std::{
     collections::HashMap,
@@ -35,11 +40,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use async_trait::async_trait;
 use serde_json;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use blockchain_iface::BlockchainClient;
 use common::types::{
     BlobId, ContextWindow, Message, Role, SessionContext, SessionId,
     SessionMetadata, SessionSummary,
@@ -47,11 +52,15 @@ use common::types::{
 
 use crate::crypto::{EncryptedBlob, SessionKey};
 
-// StorageClient is defined in crates/storage — we depend on it via a trait
-// object so context doesn't need to know about Walrus internals.
-// We re-declare the minimal interface we need here to avoid a circular dep.
-// The real storage crate implements this in Phase 5.
-#[async_trait::async_trait]
+// ---------------------------------------------------------------------------
+// StorageClient — minimal interface (avoids circular dep with storage crate)
+// ---------------------------------------------------------------------------
+
+/// Minimal blob storage interface used by the session manager.
+///
+/// The real implementations live in `crates/storage` (Phase 5).
+/// Re-declared here so `context` doesn't depend on `storage`.
+#[async_trait]
 pub trait StorageClient: Send + Sync {
     async fn put(&self, data: Vec<u8>, ttl_epochs: u64) -> anyhow::Result<BlobId>;
     async fn get(&self, blob_id: &BlobId)              -> anyhow::Result<Vec<u8>>;
@@ -59,35 +68,131 @@ pub trait StorageClient: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
+// SessionIndexStore — where we keep the "pointer to the session index blob"
+// ---------------------------------------------------------------------------
+
+/// Stores a single pointer per user: "which blob is your session index?"
+///
+/// Two implementations:
+/// - `LocalIndexStore`  — in-memory HashMap, no blockchain needed
+/// - `ChainIndexStore`  — delegates to `BlockchainClient` (network_paid mode)
+#[async_trait]
+pub trait SessionIndexStore: Send + Sync {
+    /// Get the current session index blob ID for this user.
+    /// Returns `None` if the user has no sessions yet.
+    async fn get_index_blob(&self, user_id: &str) -> anyhow::Result<Option<BlobId>>;
+
+    /// Update the session index blob ID after saving a new index.
+    async fn set_index_blob(&self, user_id: &str, blob_id: BlobId) -> anyhow::Result<()>;
+}
+
+// ── LocalIndexStore — no blockchain required ──────────────────────────────
+
+/// In-memory session index store. Works with no blockchain.
+///
+/// In standalone mode and network-free mode this is the default.
+/// The pointer lives in RAM; Phase 6 will optionally flush it to
+/// `~/.deai/sessions/_index.json` so it survives restarts.
+#[derive(Default)]
+pub struct LocalIndexStore {
+    map: Mutex<HashMap<String, BlobId>>,
+}
+
+impl LocalIndexStore {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+}
+
+#[async_trait]
+impl SessionIndexStore for LocalIndexStore {
+    async fn get_index_blob(&self, user_id: &str) -> anyhow::Result<Option<BlobId>> {
+        Ok(self.map.lock().await.get(user_id).cloned())
+    }
+
+    async fn set_index_blob(&self, user_id: &str, blob_id: BlobId) -> anyhow::Result<()> {
+        self.map.lock().await.insert(user_id.to_string(), blob_id);
+        Ok(())
+    }
+}
+
+// ── ChainIndexStore — wraps BlockchainClient ─────────────────────────────
+
+/// On-chain session index store. Used in `network_paid` mode.
+///
+/// Wraps `BlockchainClient` from `crates/blockchain-iface`. Session index
+/// blob pointers are stored on Sui so the user can recover from any device
+/// using only their wallet and session key — no local state needed.
+pub struct ChainIndexStore {
+    client: Arc<dyn blockchain_iface::BlockchainClient>,
+}
+
+impl ChainIndexStore {
+    pub fn new(client: Arc<dyn blockchain_iface::BlockchainClient>) -> Arc<Self> {
+        Arc::new(Self { client })
+    }
+}
+
+#[async_trait]
+impl SessionIndexStore for ChainIndexStore {
+    async fn get_index_blob(&self, user_id: &str) -> anyhow::Result<Option<BlobId>> {
+        self.client.get_session_index_blob(user_id).await
+    }
+
+    async fn set_index_blob(&self, user_id: &str, blob_id: BlobId) -> anyhow::Result<()> {
+        self.client.set_session_index_blob(user_id, blob_id).await
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Session manager
 // ---------------------------------------------------------------------------
 
 pub struct SessionManager {
-    storage:     Arc<dyn StorageClient>,
-    blockchain:  Arc<dyn BlockchainClient>,
+    storage:      Arc<dyn StorageClient>,
+    index_store:  Arc<dyn SessionIndexStore>,
     /// In-memory cache of recently accessed sessions.
-    /// Key: session_id, Value: (SessionContext, SessionKey)
-    cache:       Arc<Mutex<HashMap<SessionId, SessionContext>>>,
+    cache:        Arc<Mutex<HashMap<SessionId, SessionContext>>>,
     /// Default TTL in Walrus epochs for new blobs (~1 epoch ≈ 1 day).
-    ttl_epochs:  u64,
+    ttl_epochs:   u64,
 }
 
 impl SessionManager {
-    pub fn new(
+    // ── Constructors ────────────────────────────────────────────────────────
+
+    /// Create a `SessionManager` that needs **no blockchain**.
+    ///
+    /// Used in `standalone` and `network` modes. Session index pointers are
+    /// kept in memory (optionally flushed to a local file by the daemon).
+    pub fn new_standalone(storage: Arc<dyn StorageClient>) -> Self {
+        Self::new(storage, LocalIndexStore::new())
+    }
+
+    /// Create a `SessionManager` backed by an on-chain session index.
+    ///
+    /// Used in `network_paid` mode. Session index blob IDs are stored on-chain
+    /// so the user can recover sessions from any device.
+    pub fn new_with_blockchain(
         storage:    Arc<dyn StorageClient>,
-        blockchain: Arc<dyn BlockchainClient>,
+        blockchain: Arc<dyn blockchain_iface::BlockchainClient>,
+    ) -> Self {
+        Self::new(storage, ChainIndexStore::new(blockchain))
+    }
+
+    /// Core constructor — accepts any `SessionIndexStore`.
+    pub fn new(
+        storage:     Arc<dyn StorageClient>,
+        index_store: Arc<dyn SessionIndexStore>,
     ) -> Self {
         Self {
             storage,
-            blockchain,
+            index_store,
             cache:      Arc::new(Mutex::new(HashMap::new())),
             ttl_epochs: 365, // keep sessions for ~1 year
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Public API
-    // -----------------------------------------------------------------------
+    // ── Public API ──────────────────────────────────────────────────────────
 
     /// Create a brand-new session for the given user.
     pub async fn create_session(
@@ -100,7 +205,7 @@ impl SessionManager {
         let session_key = SessionKey::generate();
         let now         = unix_now();
 
-        let context_window = common::types::ContextWindow {
+        let context_window = ContextWindow {
             system_prompt,
             summary:         None,
             recent_messages: vec![],
@@ -129,82 +234,76 @@ impl SessionManager {
         Ok((session, session_key))
     }
 
-    /// Load a session from Walrus (or the in-memory cache).
+    /// Load a session from storage (or the in-memory cache).
     ///
-    /// Returns `None` if no blob ID is known yet (new session).
+    /// Returns `None` if the blob cannot be found.
     pub async fn load_session(
         &self,
         session_id: SessionId,
         blob_id:    &BlobId,
         key:        &SessionKey,
     ) -> anyhow::Result<Option<SessionContext>> {
-        // Check cache first
+        // Cache hit
         if let Some(cached) = self.cache.lock().await.get(&session_id).cloned() {
             debug!(%session_id, "session loaded from cache");
             return Ok(Some(cached));
         }
 
-        // Fetch from Walrus
-        debug!(%session_id, %blob_id, "fetching session from Walrus");
+        // Fetch from storage backend
+        debug!(%session_id, %blob_id, "fetching session from storage");
         let raw_bytes = match self.storage.get(blob_id).await {
             Ok(b)  => b,
             Err(e) => {
-                warn!(%blob_id, %e, "blob not found on Walrus");
+                warn!(%blob_id, %e, "blob not found in storage");
                 return Ok(None);
             }
         };
 
-        // Decrypt
         let blob      = EncryptedBlob::from_bytes(&raw_bytes)?;
         let plaintext = key.decrypt(&blob)?;
-
-        // Deserialise
         let session: SessionContext = serde_json::from_slice(&plaintext)
             .map_err(|e| anyhow::anyhow!("deserialise session: {e}"))?;
 
-        // Populate cache
         self.cache.lock().await.insert(session_id, session.clone());
-        info!(%session_id, "session loaded from Walrus");
+        info!(%session_id, "session loaded from storage");
         Ok(Some(session))
     }
 
-    /// Persist an updated session to Walrus and update the on-chain session
-    /// index. Returns the new blob ID.
+    /// Persist a session to storage and update the session index.
+    /// Returns the new blob ID.
     pub async fn save_session(
         &self,
         session: &SessionContext,
         key:     &SessionKey,
     ) -> anyhow::Result<BlobId> {
-        // Serialise → encrypt
         let plaintext  = serde_json::to_vec(session)
             .map_err(|e| anyhow::anyhow!("serialise session: {e}"))?;
         let blob       = key.encrypt(&plaintext)?;
         let blob_bytes = blob.to_bytes();
 
-        // Upload to Walrus
         let new_blob_id = self.storage.put(blob_bytes, self.ttl_epochs).await?;
         debug!(
             session_id = %session.session_id,
             blob_id    = %new_blob_id,
             bytes      = plaintext.len(),
-            "session saved to Walrus"
+            "session saved"
         );
 
-        // Update cache
+        // Update in-memory cache with new blob ID
         let mut updated = session.clone();
-        updated.metadata.prev_blob_id    = session.metadata.walrus_blob_id.clone();
-        updated.metadata.walrus_blob_id  = Some(new_blob_id.clone());
-        updated.metadata.last_updated    = unix_now();
+        updated.metadata.prev_blob_id   = session.metadata.walrus_blob_id.clone();
+        updated.metadata.walrus_blob_id = Some(new_blob_id.clone());
+        updated.metadata.last_updated   = unix_now();
         self.cache.lock().await.insert(session.session_id, updated);
 
-        // Persist the new session index blob for this user
+        // Update the session index (works regardless of index backend)
         self.update_session_index(&session.user_address, session, &new_blob_id, key)
             .await?;
 
         Ok(new_blob_id)
     }
 
-    /// Append a message pair (user + assistant) to the session and save.
+    /// Append a user+assistant turn to the session and save.
     pub async fn append_turn(
         &self,
         session:         &mut SessionContext,
@@ -222,7 +321,7 @@ impl SessionManager {
             content:     user_prompt.to_string(),
             timestamp:   now,
             node_id:     None,
-            token_count: 0, // approximate — updated by inference engine
+            token_count: 0,
         });
         session.messages.push(Message {
             role:        Role::Assistant,
@@ -242,21 +341,19 @@ impl SessionManager {
 
     /// Build the `ContextWindow` to send to the model.
     ///
-    /// Keeps recent messages up to `model_max_tokens`.
-    /// Older messages are summarised (caller passes in a pre-built summary
-    /// via `existing_summary`). Full summarisation logic is in `Summariser`.
+    /// Keeps the most recent messages that fit within `model_max_tokens`.
+    /// Older messages should be summarised by the `Summariser` (Phase 6).
     pub async fn build_context_window(
         &self,
-        session:        &SessionContext,
+        session:          &SessionContext,
         model_max_tokens: u32,
     ) -> anyhow::Result<ContextWindow> {
-        // Reserve 25% of the context budget for the assistant's response.
+        // Reserve 25% for the assistant's response
         let budget = (model_max_tokens * 3 / 4).max(512);
 
         let mut recent: Vec<Message> = vec![];
         let mut used_tokens: u32     = 0;
 
-        // Walk messages newest-first and take as many as fit.
         for msg in session.messages.iter().rev() {
             let cost = estimate_tokens(&msg.content);
             if used_tokens + cost > budget {
@@ -265,7 +362,7 @@ impl SessionManager {
             used_tokens  += cost;
             recent.push(msg.clone());
         }
-        recent.reverse(); // restore chronological order
+        recent.reverse();
 
         Ok(ContextWindow {
             system_prompt:   session.context_window.system_prompt.clone(),
@@ -275,35 +372,37 @@ impl SessionManager {
         })
     }
 
-    /// List all sessions for a user, loaded from their session index on Walrus.
+    /// List all sessions for a user from the session index.
+    ///
+    /// Returns an empty list if the user has no sessions yet (works with
+    /// both local and chain-backed index stores — no blockchain required).
     pub async fn list_sessions(
         &self,
         user_address: &str,
         index_key:    &SessionKey,
     ) -> anyhow::Result<Vec<SessionSummary>> {
-        // Get the session index blob ID from on-chain state
-        let index_blob_id = match self.blockchain
-            .get_session_index_blob(user_address)
+        let index_blob_id = match self.index_store
+            .get_index_blob(user_address)
             .await?
         {
             Some(id) => id,
-            None     => return Ok(vec![]), // no sessions yet
+            None     => return Ok(vec![]),
         };
 
         let raw    = self.storage.get(&index_blob_id).await?;
         let blob   = EncryptedBlob::from_bytes(&raw)?;
         let plain  = index_key.decrypt(&blob)?;
-        let index: Vec<SessionSummary> = serde_json::from_slice(&plain)
-            .unwrap_or_default();
+        let index: Vec<SessionSummary> = serde_json::from_slice(&plain).unwrap_or_default();
 
         Ok(index)
     }
 
-    // -----------------------------------------------------------------------
-    // Internal helpers
-    // -----------------------------------------------------------------------
+    // ── Internal helpers ────────────────────────────────────────────────────
 
-    /// Re-upload the session index blob and update the on-chain pointer.
+    /// Re-upload the session index blob and update the index store pointer.
+    ///
+    /// This is called after every `save_session` and works identically
+    /// whether the index store is `LocalIndexStore` or `ChainIndexStore`.
     async fn update_session_index(
         &self,
         user_address: &str,
@@ -311,9 +410,9 @@ impl SessionManager {
         new_blob_id:  &BlobId,
         key:          &SessionKey,
     ) -> anyhow::Result<()> {
-        // Load current index (ignore errors — start fresh if missing)
+        // Load existing index (start fresh on any error)
         let mut summaries: Vec<SessionSummary> =
-            match self.blockchain.get_session_index_blob(user_address).await? {
+            match self.index_store.get_index_blob(user_address).await? {
                 Some(id) => {
                     match self.storage.get(&id).await {
                         Ok(raw) => {
@@ -327,7 +426,7 @@ impl SessionManager {
                 None => vec![],
             };
 
-        // Build a summary for this session
+        // Build / upsert summary entry for this session
         let preview = session.messages.iter()
             .find(|m| matches!(m.role, Role::User))
             .map(|m| m.content.chars().take(80).collect::<String>())
@@ -342,27 +441,28 @@ impl SessionManager {
             preview,
         };
 
-        // Upsert the summary (replace existing entry for this session_id)
         if let Some(pos) = summaries.iter().position(|s| s.session_id == session.session_id) {
             summaries[pos] = summary;
         } else {
             summaries.push(summary);
         }
 
-        // Sort by most recently updated
         summaries.sort_by(|a, b| b.last_updated.cmp(&a.last_updated));
 
         // Encrypt and upload the index
-        let index_json  = serde_json::to_vec(&summaries)?;
-        let index_blob  = key.encrypt(&index_json)?;
-        let index_id    = self.storage.put(index_blob.to_bytes(), self.ttl_epochs).await?;
+        let index_json = serde_json::to_vec(&summaries)?;
+        let index_blob = key.encrypt(&index_json)?;
+        let index_id   = self.storage.put(index_blob.to_bytes(), self.ttl_epochs).await?;
 
-        // Update on-chain pointer
-        self.blockchain
-            .set_session_index_blob(user_address, index_id)
-            .await?;
+        // Update the pointer — whether that's a local map or a chain TX
+        self.index_store.set_index_blob(user_address, index_id).await?;
 
-        debug!(%user_address, sessions = summaries.len(), "session index updated");
+        debug!(
+            %user_address,
+            sessions        = summaries.len(),
+            latest_blob_id  = %new_blob_id,
+            "session index updated"
+        );
         Ok(())
     }
 }
@@ -378,7 +478,6 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
-/// Rough token count estimate: ~4 chars per token (GPT-4 average).
 fn estimate_tokens(text: &str) -> u32 {
     (text.len() as u32 / 4).max(1)
 }
@@ -393,15 +492,15 @@ mod tests {
     use std::collections::HashMap;
     use tokio::sync::Mutex;
 
-    // ---- In-memory storage stub ----
+    // ── In-memory storage stub ─────────────────────────────────────────────
 
     #[derive(Default)]
     struct MemStorage {
-        blobs: Arc<Mutex<HashMap<BlobId, Vec<u8>>>>,
+        blobs:   Arc<Mutex<HashMap<BlobId, Vec<u8>>>>,
         counter: Arc<Mutex<u64>>,
     }
 
-    #[async_trait::async_trait]
+    #[async_trait]
     impl StorageClient for MemStorage {
         async fn put(&self, data: Vec<u8>, _ttl: u64) -> anyhow::Result<BlobId> {
             let mut c  = self.counter.lock().await;
@@ -421,40 +520,18 @@ mod tests {
         }
     }
 
-    // ---- Blockchain stub ----
+    // ── Helpers ─────────────────────────────────────────────────────────────
 
-    #[derive(Default)]
-    struct MemBlockchain {
-        index: Arc<Mutex<HashMap<String, BlobId>>>,
+    fn make_manager() -> SessionManager {
+        // Uses LocalIndexStore — no blockchain dependency
+        SessionManager::new_standalone(Arc::new(MemStorage::default()))
     }
 
-    #[async_trait::async_trait]
-    impl BlockchainClient for MemBlockchain {
-        async fn deposit_escrow(&self, _: u64, _: uuid::Uuid) -> anyhow::Result<String> { Ok("tx".into()) }
-        async fn release_escrow(&self, _: &common::types::ProofOfInference) -> anyhow::Result<()> { Ok(()) }
-        async fn refund_escrow(&self, _: uuid::Uuid) -> anyhow::Result<()> { Ok(()) }
-        async fn get_balance(&self, _: &str) -> anyhow::Result<u64> { Ok(1_000_000) }
-        async fn get_session_index_blob(&self, addr: &str) -> anyhow::Result<Option<BlobId>> {
-            Ok(self.index.lock().await.get(addr).cloned())
-        }
-        async fn set_session_index_blob(&self, addr: &str, id: BlobId) -> anyhow::Result<()> {
-            self.index.lock().await.insert(addr.to_string(), id);
-            Ok(())
-        }
-        async fn submit_proof(&self, _: &common::types::ProofOfInference) -> anyhow::Result<()> { Ok(()) }
-    }
-
-    fn make_manager() -> (SessionManager, SessionKey) {
-        let storage    = Arc::new(MemStorage::default());
-        let blockchain = Arc::new(MemBlockchain::default());
-        let mgr        = SessionManager::new(storage, blockchain);
-        let index_key  = SessionKey::generate();
-        (mgr, index_key)
-    }
+    // ── Tests ────────────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_create_and_save_session() {
-        let (mgr, _) = make_manager();
+        let mgr        = make_manager();
         let (session, key) = mgr
             .create_session("0xUser1", "llama3.1:8b", Some("You are helpful.".into()))
             .await.unwrap();
@@ -468,7 +545,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_save_and_load_roundtrip() {
-        let (mgr, _) = make_manager();
+        let mgr            = make_manager();
         let (session, key) = mgr
             .create_session("0xUser2", "mistral:7b", None)
             .await.unwrap();
@@ -476,7 +553,7 @@ mod tests {
 
         let blob_id = mgr.save_session(&session, &key).await.unwrap();
 
-        // Evict from cache to force Walrus fetch
+        // Evict from cache to force storage fetch
         mgr.cache.lock().await.remove(&session_id);
 
         let loaded = mgr
@@ -490,7 +567,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_append_turn_and_context_window() {
-        let (mgr, _) = make_manager();
+        let mgr                = make_manager();
         let (mut session, key) = mgr
             .create_session("0xUser3", "llama3.1:8b", None)
             .await.unwrap();
@@ -499,8 +576,7 @@ mod tests {
             &mut session,
             "What is 2+2?",
             "It is 4.",
-            20,
-            5,
+            20, 5,
             Some("node_gpu_1".into()),
             &key,
         ).await.unwrap();
@@ -513,30 +589,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_sessions() {
-        let (mgr, index_key) = make_manager();
-
+    async fn test_list_sessions_no_blockchain() {
+        let mgr            = make_manager();
         let (session, key) = mgr
             .create_session("0xUser4", "llama3.1:8b", None)
             .await.unwrap();
+
+        // save_session also updates the session index
         mgr.save_session(&session, &key).await.unwrap();
 
-        // Use the same key for the session index in this test
+        // list_sessions must work without any blockchain
         let summaries = mgr.list_sessions("0xUser4", &key).await.unwrap();
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].model_id, "llama3.1:8b");
-
-        let _ = index_key; // silence unused warning
     }
 
     #[tokio::test]
     async fn test_context_window_respects_token_budget() {
-        let (mgr, _) = make_manager();
+        let mgr                = make_manager();
         let (mut session, key) = mgr
             .create_session("0xUser5", "llama3.1:8b", None)
             .await.unwrap();
 
-        // Add 20 turns with long messages
         for i in 0..20 {
             let long_message = "word ".repeat(200); // ~50 tokens each
             mgr.append_turn(
@@ -547,11 +621,28 @@ mod tests {
             ).await.unwrap();
         }
 
-        // With a small context budget, we should only get recent messages
         let window = mgr.build_context_window(&session, 512).await.unwrap();
         assert!(
             window.recent_messages.len() < 40,
             "should have trimmed old messages to fit budget"
         );
+    }
+
+    /// Verify that `new_with_blockchain` compiles and works the same way.
+    /// Uses `blockchain_iface::MockBlockchainClient` as the chain backend.
+    #[tokio::test]
+    async fn test_chain_index_store_via_mock_blockchain() {
+        let storage    = Arc::new(MemStorage::default());
+        let blockchain = Arc::new(blockchain_iface::MockBlockchainClient::default());
+        let mgr        = SessionManager::new_with_blockchain(storage, blockchain);
+
+        let (session, key) = mgr
+            .create_session("0xChainUser", "llama3.1:8b", None)
+            .await.unwrap();
+
+        mgr.save_session(&session, &key).await.unwrap();
+
+        let summaries = mgr.list_sessions("0xChainUser", &key).await.unwrap();
+        assert_eq!(summaries.len(), 1);
     }
 }

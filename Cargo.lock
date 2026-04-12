@@ -347,6 +347,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "common",
+ "tokio",
  "tracing",
  "uuid",
 ]
@@ -500,12 +501,15 @@ name = "common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "prost",
  "prost-build",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
+ "tokio",
  "toml",
  "tracing",
  "uuid",
@@ -3517,6 +3521,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "tokio",
  "tracing",
  "uuid",

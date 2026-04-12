@@ -6,7 +6,10 @@
 //! swapped between `MockBlockchainClient` (dev/test) and the real Sui client
 //! without touching any other crate.
 
+use std::{collections::HashMap, sync::Arc};
+
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 use common::types::{BlobId, NanoX, ProofOfInference, RequestId};
 
 // ---------------------------------------------------------------------------
@@ -58,7 +61,14 @@ pub trait BlockchainClient: Send + Sync {
 // Mock — used in local dev and integration tests (no Sui node required)
 // ---------------------------------------------------------------------------
 
-pub struct MockBlockchainClient;
+/// In-memory mock — suitable for unit tests and standalone dev.
+///
+/// All state is in-memory, all writes are reflected by subsequent reads.
+/// No Sui node, no wallet, no tokens required.
+#[derive(Default)]
+pub struct MockBlockchainClient {
+    session_index: Arc<Mutex<HashMap<String, BlobId>>>,
+}
 
 #[async_trait]
 impl BlockchainClient for MockBlockchainClient {
@@ -90,17 +100,18 @@ impl BlockchainClient for MockBlockchainClient {
 
     async fn get_session_index_blob(
         &self,
-        _address: &str,
+        address: &str,
     ) -> anyhow::Result<Option<BlobId>> {
-        Ok(None)
+        Ok(self.session_index.lock().await.get(address).cloned())
     }
 
     async fn set_session_index_blob(
         &self,
-        _address: &str,
+        address: &str,
         blob_id: BlobId,
     ) -> anyhow::Result<()> {
-        tracing::debug!(%blob_id, "mock: set_session_index_blob");
+        tracing::debug!(%blob_id, %address, "mock: set_session_index_blob");
+        self.session_index.lock().await.insert(address.to_string(), blob_id);
         Ok(())
     }
 

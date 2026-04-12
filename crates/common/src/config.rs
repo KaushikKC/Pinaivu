@@ -8,6 +8,7 @@ pub struct NodeConfig {
     pub gpu:       GpuSection,
     pub inference: InferenceSection,
     pub network:   NetworkSection,
+    pub storage:   StorageSection,
     pub pricing:   PricingSection,
     pub wallet:    WalletSection,
     pub privacy:   PrivacySection,
@@ -22,6 +23,7 @@ impl Default for NodeConfig {
             gpu:       GpuSection::default(),
             inference: InferenceSection::default(),
             network:   NetworkSection::default(),
+            storage:   StorageSection::default(),
             pricing:   PricingSection::default(),
             wallet:    WalletSection::default(),
             privacy:   PrivacySection::default(),
@@ -54,9 +56,26 @@ impl NodeConfig {
 // Config sections
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationMode {
+    /// Single machine, no P2P, no payment. Personal AI assistant.
+    Standalone,
+    /// Full P2P, no blockchain/payment. Private cluster or friend group.
+    Network,
+    /// Full P2P + optional on-chain escrow. Public trustless marketplace.
+    NetworkPaid,
+}
+
+impl Default for OperationMode {
+    fn default() -> Self { Self::Standalone }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NodeSection {
+    /// Operation mode: standalone | network | network_paid.
+    pub mode:     OperationMode,
     /// Auto-populated on first run from the libp2p keypair.
     pub node_id:  String,
     pub data_dir: String,
@@ -66,9 +85,38 @@ pub struct NodeSection {
 impl Default for NodeSection {
     fn default() -> Self {
         Self {
+            mode:      OperationMode::Standalone,
             node_id:   String::new(),
             data_dir:  "~/.deai/data".into(),
             log_level: "info".into(),
+        }
+    }
+}
+
+/// Storage backend configuration.
+///
+/// `backend` selects where encrypted session blobs are stored.
+/// The `walrus_*` fields are only used when `backend` is `walrus` or `walrus_chain`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StorageSection {
+    /// "local" | "walrus" | "walrus_chain"
+    pub backend:           String,
+    /// Used when backend = "local"
+    pub sessions_dir:      String,
+    /// Walrus aggregator URL (reads)
+    pub walrus_aggregator: String,
+    /// Walrus publisher URL (writes)
+    pub walrus_publisher:  String,
+}
+
+impl Default for StorageSection {
+    fn default() -> Self {
+        Self {
+            backend:           "local".into(),
+            sessions_dir:      "~/.deai/sessions".into(),
+            walrus_aggregator: "https://aggregator.walrus.site".into(),
+            walrus_publisher:  "https://publisher.walrus.site".into(),
         }
     }
 }

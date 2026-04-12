@@ -31,7 +31,7 @@ x25519-dalek       = { version = "2", features = ["static_secrets"] }
 rand               = "0.8"
 sha2               = "0.10"
 hex                = "0.4"
-clap               = { version = "4", features = ["derive"] }
+clap               = { version = "4", features = ["derive", "env"] }
 prometheus         = "0.13"
 axum               = "0.7"
 tokio-util         = { version = "0.7", features = ["codec"] }
