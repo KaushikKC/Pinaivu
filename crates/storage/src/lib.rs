@@ -15,10 +15,12 @@
 //! avoid a circular dependency. The two declarations are structurally identical;
 //! a concrete type from this crate satisfies both via dyn-trait.
 
+pub mod ipfs;
 pub mod local;
 pub mod memory;
 pub mod walrus;
 
+pub use ipfs::IpfsStorageClient;
 pub use local::LocalStorageClient;
 pub use memory::MemoryStorageClient;
 pub use walrus::WalrusClient;

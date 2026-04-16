@@ -22,7 +22,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, trace};
 use common::{
     config::NodeConfig,
-    types::{InferenceBid, InferenceRequest, PrivacyLevel},
+    types::{InferenceBid, InferenceRequest, PrivacyLevel, ReputationScore, SettlementOffer},
 };
 
 use crate::{scheduler::NodeScheduler, InferenceEngine};
@@ -169,16 +169,32 @@ impl BidDecisionEngine {
             self.config.pricing.price_per_1k_tokens
         };
 
+        // Build settlement offers from config adapters.
+        // Nodes advertise exactly what they accept, in preference order.
+        let accepted_settlements: Vec<SettlementOffer> = self
+            .config
+            .settlement
+            .adapters
+            .iter()
+            .map(|a| SettlementOffer {
+                settlement_id: a.id.clone(),
+                price_per_1k:  if a.price_per_1k > 0 { a.price_per_1k } else { price_per_1k },
+                token_id:      a.token_id.clone(),
+            })
+            .collect();
+
         Ok(InferenceBid {
             request_id:           req.request_id,
             node_peer_id:         peer_id.to_string(),
-            price_per_1k,
             estimated_latency_ms,
             current_load_pct:     load_pct,
-            reputation_score:     0.8, // placeholder — reputation system in Phase 9
             model_id:             req.model_preference.clone(),
             max_context_len:      self.config.inference.max_context_length,
             has_tee:              self.config.privacy.tee_enabled,
+            // Reputation is populated from the store in network mode.
+            // In standalone / early dev this is a zeroed default.
+            reputation:           ReputationScore::default(),
+            accepted_settlements,
         })
     }
 
@@ -219,19 +235,20 @@ mod tests {
 
     fn make_request(model: &str, budget: u64, privacy: PrivacyLevel) -> InferenceRequest {
         InferenceRequest {
-            request_id:       Uuid::new_v4(),
-            session_id:       Uuid::new_v4(),
-            model_preference: model.to_string(),
-            context_blob_id:  None,
-            prompt_encrypted: vec![],
-            prompt_nonce:     vec![0u8; 12],
-            max_tokens:       256,
-            temperature:      0.7,
-            escrow_tx_id:     "mock_tx".into(),
-            budget_nanox:     budget,
-            timestamp:        0,
-            client_peer_id:   "peer_client".into(),
-            privacy_level:    privacy,
+            request_id:           Uuid::new_v4(),
+            session_id:           Uuid::new_v4(),
+            model_preference:     model.to_string(),
+            context_blob_id:      None,
+            prompt_encrypted:     vec![],
+            prompt_nonce:         vec![0u8; 12],
+            max_tokens:           256,
+            temperature:          0.7,
+            escrow_tx_id:         "mock_tx".into(),
+            budget_nanox:         budget,
+            timestamp:            0,
+            client_peer_id:       "peer_client".into(),
+            privacy_level:        privacy,
+            accepted_settlements: vec!["free".into()],
         }
     }
 
