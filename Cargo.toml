@@ -7,6 +7,8 @@ members = [
   "crates/storage",
   "crates/blockchain-iface",
   "crates/common",
+  "crates/reputation",
+  "crates/settlement",
 ]
 resolver = "2"
 
@@ -22,7 +24,7 @@ uuid               = { version = "1", features = ["v4", "serde"] }
 chrono             = { version = "0.4", features = ["serde"] }
 async-trait        = "0.1"
 toml               = "0.8"
-reqwest            = { version = "0.12", features = ["json", "stream"] }
+reqwest            = { version = "0.12", features = ["json", "stream", "multipart"] }
 bytes              = "1"
 futures            = "0.3"
 prost              = "0.13"
@@ -30,6 +32,7 @@ aes-gcm            = "0.10"
 x25519-dalek       = { version = "2", features = ["static_secrets"] }
 rand               = "0.8"
 sha2               = "0.10"
+ed25519-dalek      = { version = "2", features = ["serde", "rand_core"] }
 hex                = "0.4"
 clap               = { version = "4", features = ["derive", "env"] }
 prometheus         = "0.13"

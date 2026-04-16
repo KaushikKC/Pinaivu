@@ -36,8 +36,9 @@ fn dummy_inference_request() -> InferenceRequest {
         escrow_tx_id:     "mock_tx_abc".into(),
         budget_nanox:     1000,
         timestamp:        0,
-        client_peer_id:   "peer_a".into(),
-        privacy_level:    PrivacyLevel::Standard,
+        client_peer_id:       "peer_a".into(),
+        privacy_level:        PrivacyLevel::Standard,
+        accepted_settlements: vec!["free".into()],
     }
 }
 

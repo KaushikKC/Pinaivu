@@ -237,19 +237,22 @@ mod tests {
     use crate::types::ProofOfInference;
 
     fn make_proof(client: &str, tokens: u32, cost: NanoX) -> ProofOfInference {
-        ProofOfInference {
-            request_id:       Uuid::new_v4(),
-            session_id:       Uuid::new_v4(),
-            node_peer_id:     "node_1".into(),
-            client_address:   client.to_string(),
-            model_id:         "llama3.1:8b".into(),
-            input_tokens:     10,
-            output_tokens:    tokens,
-            latency_ms:       150,
-            response_hash:    vec![0u8; 32],
-            price_paid_nanox: cost,
-            timestamp:        unix_now(),
-        }
+        ProofOfInference::unsigned(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "node_1".into(),
+            client.to_string(),
+            "llama3.1:8b".into(),
+            10,
+            tokens,
+            150,
+            cost,
+            unix_now(),
+            [0u8; 32],
+            [0u8; 32],
+            "free".into(),
+            None,
+        )
     }
 
     #[tokio::test]

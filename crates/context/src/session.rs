@@ -224,8 +224,8 @@ impl SessionManager {
                 turn_count:        0,
                 total_tokens_used: 0,
                 total_cost_nanox:  0,
-                walrus_blob_id:    None,
-                prev_blob_id:      None,
+                blob_id:      None,
+                prev_blob_id: None,
             },
         };
 
@@ -291,8 +291,8 @@ impl SessionManager {
 
         // Update in-memory cache with new blob ID
         let mut updated = session.clone();
-        updated.metadata.prev_blob_id   = session.metadata.walrus_blob_id.clone();
-        updated.metadata.walrus_blob_id = Some(new_blob_id.clone());
+        updated.metadata.prev_blob_id = session.metadata.blob_id.clone();
+        updated.metadata.blob_id      = Some(new_blob_id.clone());
         updated.metadata.last_updated   = unix_now();
         self.cache.lock().await.insert(session.session_id, updated);
 

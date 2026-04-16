@@ -4,31 +4,35 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NodeConfig {
-    pub node:      NodeSection,
-    pub gpu:       GpuSection,
-    pub inference: InferenceSection,
-    pub network:   NetworkSection,
-    pub storage:   StorageSection,
-    pub pricing:   PricingSection,
-    pub wallet:    WalletSection,
-    pub privacy:   PrivacySection,
-    pub health:    HealthSection,
-    pub updates:   UpdatesSection,
+    pub node:       NodeSection,
+    pub gpu:        GpuSection,
+    pub inference:  InferenceSection,
+    pub network:    NetworkSection,
+    pub storage:    StorageSection,
+    pub pricing:    PricingSection,
+    pub wallet:     WalletSection,
+    pub privacy:    PrivacySection,
+    pub health:     HealthSection,
+    pub updates:    UpdatesSection,
+    pub reputation: ReputationSection,
+    pub settlement: SettlementSection,
 }
 
 impl Default for NodeConfig {
     fn default() -> Self {
         Self {
-            node:      NodeSection::default(),
-            gpu:       GpuSection::default(),
-            inference: InferenceSection::default(),
-            network:   NetworkSection::default(),
-            storage:   StorageSection::default(),
-            pricing:   PricingSection::default(),
-            wallet:    WalletSection::default(),
-            privacy:   PrivacySection::default(),
-            health:    HealthSection::default(),
-            updates:   UpdatesSection::default(),
+            node:       NodeSection::default(),
+            gpu:        GpuSection::default(),
+            inference:  InferenceSection::default(),
+            network:    NetworkSection::default(),
+            storage:    StorageSection::default(),
+            pricing:    PricingSection::default(),
+            wallet:     WalletSection::default(),
+            privacy:    PrivacySection::default(),
+            health:     HealthSection::default(),
+            updates:    UpdatesSection::default(),
+            reputation: ReputationSection::default(),
+            settlement: SettlementSection::default(),
         }
     }
 }
@@ -96,17 +100,21 @@ impl Default for NodeSection {
 /// Storage backend configuration.
 ///
 /// `backend` selects where encrypted session blobs are stored.
-/// The `walrus_*` fields are only used when `backend` is `walrus` or `walrus_chain`.
+/// Fields for each backend are only used when that backend is active.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StorageSection {
-    /// "local" | "walrus" | "walrus_chain"
+    /// "local" | "ipfs" | "walrus" | "walrus_chain"
     pub backend:           String,
     /// Used when backend = "local"
     pub sessions_dir:      String,
-    /// Walrus aggregator URL (reads)
+    /// IPFS Kubo HTTP RPC API URL. Used when backend = "ipfs".
+    /// Compatible with local Kubo (`http://localhost:5001`),
+    /// Pinata, Web3.Storage, or any Kubo-compatible pinning service.
+    pub ipfs_api:          String,
+    /// Walrus aggregator URL (reads). Used when backend = "walrus".
     pub walrus_aggregator: String,
-    /// Walrus publisher URL (writes)
+    /// Walrus publisher URL (writes). Used when backend = "walrus".
     pub walrus_publisher:  String,
 }
 
@@ -115,6 +123,7 @@ impl Default for StorageSection {
         Self {
             backend:           "local".into(),
             sessions_dir:      "~/.deai/sessions".into(),
+            ipfs_api:          "http://localhost:5001".into(),
             walrus_aggregator: "https://aggregator.walrus.site".into(),
             walrus_publisher:  "https://publisher.walrus.site".into(),
         }
@@ -261,6 +270,89 @@ impl Default for UpdatesSection {
         Self {
             auto_update:    true,
             update_channel: "stable".into(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reputation section
+// ---------------------------------------------------------------------------
+
+/// Which backend stores and computes reputation scores.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReputationStoreKind {
+    /// In-memory + local file. No network required. Used in standalone mode.
+    #[default]
+    Local,
+    /// Gossips Merkle roots over libp2p. No chain required. Used in network mode.
+    Gossip,
+    /// Gossip + periodic on-chain Merkle root anchor. Used in network_paid mode.
+    Anchored,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReputationSection {
+    pub store:             ReputationStoreKind,
+    /// Which settlement adapter to anchor the Merkle root to (only used when
+    /// `store = "anchored"`). Matches an `id` in `[[settlement.adapters]]`.
+    pub anchor_settlement: Option<String>,
+    /// How often (in seconds) to anchor the Merkle root on-chain.
+    pub anchor_interval:   u64,
+}
+
+impl Default for ReputationSection {
+    fn default() -> Self {
+        Self {
+            store:             ReputationStoreKind::Local,
+            anchor_settlement: None,
+            anchor_interval:   3600,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Settlement section
+// ---------------------------------------------------------------------------
+
+/// Per-adapter configuration. Fields are adapter-specific; unused ones are
+/// ignored by the adapter.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SettlementAdapterConfig {
+    /// Adapter identifier: "free" | "receipt" | "channel" | "sui" | "evm-8453" | …
+    pub id:               String,
+    /// NanoX per 1 000 output tokens on this adapter (0 = inherit global pricing).
+    pub price_per_1k:     u64,
+    /// Token identifier: "native" or a contract address.
+    pub token_id:         String,
+    pub rpc_url:          Option<String>,
+    pub contract_address: Option<String>,
+    pub token_address:    Option<String>,
+    /// Sui Move package ID.
+    pub package_id:       Option<String>,
+    /// EVM chain ID (e.g. 8453 for Base).
+    pub chain_id:         Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SettlementSection {
+    /// Ordered by preference. The first adapter whose `id` matches the client's
+    /// accepted list wins. "free" is always appended as last-resort fallback.
+    pub adapters: Vec<SettlementAdapterConfig>,
+}
+
+impl Default for SettlementSection {
+    fn default() -> Self {
+        // Default: accept free requests only. Operators add paid adapters via config.
+        Self {
+            adapters: vec![SettlementAdapterConfig {
+                id:       "free".into(),
+                token_id: "native".into(),
+                ..Default::default()
+            }],
         }
     }
 }

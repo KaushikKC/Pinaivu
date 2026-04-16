@@ -82,8 +82,9 @@ impl BlockchainClient for MockBlockchainClient {
 
     async fn release_escrow(&self, proof: &ProofOfInference) -> anyhow::Result<()> {
         tracing::debug!(
-            request_id = %proof.request_id,
-            amount = proof.price_paid_nanox,
+            request_id   = %proof.request_id,
+            amount       = proof.price_paid_nanox,
+            settlement   = %proof.settlement_id,
             "mock: release_escrow"
         );
         Ok(())
@@ -118,7 +119,8 @@ impl BlockchainClient for MockBlockchainClient {
     async fn submit_proof(&self, proof: &ProofOfInference) -> anyhow::Result<()> {
         tracing::debug!(
             request_id = %proof.request_id,
-            tokens = proof.output_tokens,
+            tokens     = proof.output_tokens,
+            verified   = proof.verify(),
             "mock: submit_proof"
         );
         Ok(())

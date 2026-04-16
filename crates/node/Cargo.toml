@@ -9,6 +9,8 @@ path = "src/main.rs"
 
 [dependencies]
 common           = { path = "../common" }
+reputation       = { path = "../reputation" }
+settlement       = { path = "../settlement" }
 blockchain-iface = { path = "../blockchain-iface" }
 p2p              = { path = "../p2p" }
 inference        = { path = "../inference" }

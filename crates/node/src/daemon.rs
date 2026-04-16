@@ -17,9 +17,14 @@ use anyhow::Context as _;
 use tracing::{debug, error, info, warn};
 
 use common::{
-    config::{NodeConfig, OperationMode},
+    config::{NodeConfig, OperationMode, ReputationStoreKind},
     payment::{FreePayment, LocalLedger, PaymentBackend},
-    types::{GpuType, InferenceRequest, NodeCapabilities},
+    types::{GpuType, InferenceRequest, NodeCapabilities, ReputationScore},
+};
+use reputation::{GossipReputationStore, LocalReputationStore, ReputationStore};
+use settlement::{
+    ensure_free_fallback, FreeSettlement, PaymentChannel, SettlementAdapter,
+    SignedReceiptSettlement,
 };
 use context::session::SessionManager;
 use inference::{
@@ -28,7 +33,7 @@ use inference::{
     InferenceEngine, OllamaEngine,
 };
 use p2p::{P2PEvent, P2PService};
-use storage::{LocalStorageClient, StorageClient, WalrusClient};
+use storage::{IpfsStorageClient, LocalStorageClient, StorageClient, WalrusClient};
 
 // ---------------------------------------------------------------------------
 // StorageAdapter — bridges storage::StorageClient ↔ context::session::StorageClient
@@ -62,6 +67,10 @@ pub struct DeAIDaemon {
     storage:     Arc<dyn StorageClient>,
     session_mgr: Arc<SessionManager>,
     payment:     Arc<dyn PaymentBackend>,
+    reputation:  Arc<dyn ReputationStore>,
+    /// Settlement adapters in preference order. First match with client wins.
+    /// Always contains at least `FreeSettlement` as the last-resort fallback.
+    settlements: Vec<Arc<dyn SettlementAdapter>>,
     engine:      Arc<dyn InferenceEngine>,
     scheduler:   Arc<NodeScheduler>,
     bid_engine:  Arc<BidDecisionEngine>,
@@ -82,6 +91,10 @@ impl DeAIDaemon {
 
         // ── Storage backend ─────────────────────────────────────────────────
         let storage: Arc<dyn StorageClient> = match config.storage.backend.as_str() {
+            "ipfs" => {
+                info!(api = %config.storage.ipfs_api, "using IPFS storage");
+                Arc::new(IpfsStorageClient::new(&config.storage.ipfs_api)?)
+            }
             "walrus" | "walrus_chain" => {
                 info!(
                     aggregator = %config.storage.walrus_aggregator,
@@ -122,6 +135,52 @@ impl DeAIDaemon {
                 Arc::new(FreePayment)
             }
         };
+
+        // ── Reputation store ─────────────────────────────────────────────────
+        let peer_id_str = config.node.node_id.clone();
+        let reputation: Arc<dyn ReputationStore> = match config.reputation.store {
+            ReputationStoreKind::Local => {
+                let path = expand_tilde("~/.deai/reputation.json");
+                let store = LocalReputationStore::from_file(peer_id_str.clone(), path)
+                    .unwrap_or_else(|_| LocalReputationStore::in_memory(peer_id_str.clone()));
+                info!("reputation store: local");
+                Arc::new(store)
+            }
+            ReputationStoreKind::Gossip | ReputationStoreKind::Anchored => {
+                let path = expand_tilde("~/.deai/reputation.json");
+                let inner = LocalReputationStore::from_file(peer_id_str.clone(), path)
+                    .unwrap_or_else(|_| LocalReputationStore::in_memory(peer_id_str.clone()));
+                info!("reputation store: gossip (Merkle root gossip wired in Phase G)");
+                Arc::new(GossipReputationStore::new(Arc::new(inner)))
+            }
+        };
+
+        // ── Settlement adapters ──────────────────────────────────────────────
+        // Build adapters from config in preference order, then ensure "free" is
+        // always available as the last-resort fallback.
+        let mut raw_settlements: Vec<Arc<dyn SettlementAdapter>> = config
+            .settlement
+            .adapters
+            .iter()
+            .filter_map(|a| -> Option<Arc<dyn SettlementAdapter>> {
+                match a.id.as_str() {
+                    "free"    => Some(Arc::new(FreeSettlement)),
+                    "receipt" => Some(Arc::new(SignedReceiptSettlement::new())),
+                    "channel" => Some(Arc::new(PaymentChannel::new())),
+                    other     => {
+                        // Sui / EVM / Solana adapters added in Phases D/E
+                        info!(adapter = %other, "settlement adapter not yet implemented — skipped");
+                        None
+                    }
+                }
+            })
+            .collect();
+        let settlements = ensure_free_fallback(raw_settlements);
+        info!(
+            count   = settlements.len(),
+            ids     = ?settlements.iter().map(|a| a.id()).collect::<Vec<_>>(),
+            "settlement adapters loaded"
+        );
 
         // ── Session manager ──────────────────────────────────────────────────
         // Uses LocalIndexStore in all modes by default (no blockchain needed).
@@ -168,14 +227,29 @@ impl DeAIDaemon {
 
                 // Announce our capabilities
                 let peer_id = svc.local_peer_id().await?;
+                // Load current reputation score from the store for announcement.
+                let reputation_score = reputation
+                    .get_score(&peer_id.to_string())
+                    .await
+                    .unwrap_or_default();
                 let caps = NodeCapabilities {
-                    peer_id:     peer_id.to_string(),
-                    models:      available,
-                    gpu_vram_mb: 0,  // updated by health loop (Phase 9)
-                    gpu_type:    GpuType::Cpu,
-                    region:      None,
-                    tee_enabled: config.privacy.tee_enabled,
-                    reputation:  1.0,
+                    peer_id:              peer_id.to_string(),
+                    models:               available,
+                    gpu_vram_mb:          0, // updated by health loop (Phase 9)
+                    gpu_type:             GpuType::Cpu,
+                    region:               None,
+                    tee_enabled:          config.privacy.tee_enabled,
+                    reputation:           reputation_score,
+                    accepted_settlements: config
+                        .settlement
+                        .adapters
+                        .iter()
+                        .map(|a| common::types::SettlementOffer {
+                            settlement_id: a.id.clone(),
+                            price_per_1k:  a.price_per_1k,
+                            token_id:      a.token_id.clone(),
+                        })
+                        .collect(),
                 };
                 // Best-effort announce — may fail if no peers yet
                 let _ = svc.announce_capabilities(&caps).await;
@@ -189,6 +263,8 @@ impl DeAIDaemon {
             storage,
             session_mgr,
             payment,
+            reputation,
+            settlements,
             engine: engine_ref,
             scheduler,
             bid_engine,
@@ -209,6 +285,11 @@ impl DeAIDaemon {
     /// Returns the inference engine for the API server.
     pub fn inference_engine(&self) -> Arc<dyn InferenceEngine> {
         Arc::clone(&self.engine)
+    }
+
+    /// Returns the active settlement adapters (for job dispatch and bid matching).
+    pub fn settlements(&self) -> &[Arc<dyn SettlementAdapter>] {
+        &self.settlements
     }
 
     // ── Main run loop ─────────────────────────────────────────────────────────
@@ -274,7 +355,7 @@ async fn event_loop(
                 debug!(
                     request_id = %bid.request_id,
                     node       = %bid.node_peer_id,
-                    price      = bid.price_per_1k,
+                    price      = bid.accepted_settlements.first().map(|o| o.price_per_1k).unwrap_or(0),
                     "bid received"
                 );
                 // Client-side bid collection is handled by the TypeScript SDK
@@ -342,7 +423,7 @@ fn handle_inference_request(
 
         info!(
             request_id   = %req.request_id,
-            price_per_1k = bid.price_per_1k,
+            price_per_1k = bid.accepted_settlements.first().map(|o| o.price_per_1k).unwrap_or(0),
             latency_ms   = bid.estimated_latency_ms,
             "bid sent"
         );
