@@ -334,6 +334,10 @@ pub struct SettlementAdapterConfig {
     pub package_id:       Option<String>,
     /// EVM chain ID (e.g. 8453 for Base).
     pub chain_id:         Option<u64>,
+    /// Hex-encoded Ed25519 private-key seed (32 bytes) for the node's on-chain wallet.
+    /// Used by Sui and EVM adapters to sign transactions.
+    /// Leave unset to make the adapter read-only (balance queries only).
+    pub signer_key_hex:   Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

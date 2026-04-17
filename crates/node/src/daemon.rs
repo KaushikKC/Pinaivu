@@ -23,8 +23,8 @@ use common::{
 };
 use reputation::{GossipReputationStore, LocalReputationStore, ReputationStore};
 use settlement::{
-    ensure_free_fallback, FreeSettlement, PaymentChannel, SettlementAdapter,
-    SignedReceiptSettlement,
+    ensure_free_fallback, EvmConfig, EvmSettlement, FreeSettlement, PaymentChannel,
+    SettlementAdapter, SignedReceiptSettlement, SuiConfig, SuiSettlement,
 };
 use context::session::SessionManager;
 use inference::{
@@ -167,8 +167,111 @@ impl DeAIDaemon {
                     "free"    => Some(Arc::new(FreeSettlement)),
                     "receipt" => Some(Arc::new(SignedReceiptSettlement::new())),
                     "channel" => Some(Arc::new(PaymentChannel::new())),
-                    other     => {
-                        // Sui / EVM / Solana adapters added in Phases D/E
+                    "sui"     => {
+                        let rpc_url = match &a.rpc_url {
+                            Some(u) => u.clone(),
+                            None => {
+                                warn!("sui adapter: rpc_url not configured — skipped");
+                                return None;
+                            }
+                        };
+                        let package_id = match &a.package_id {
+                            Some(p) => p.clone(),
+                            None => {
+                                warn!("sui adapter: package_id not configured — skipped");
+                                return None;
+                            }
+                        };
+                        let treasury_address = match &a.contract_address {
+                            Some(t) => t.clone(),
+                            None => {
+                                warn!("sui adapter: contract_address (treasury) not configured — skipped");
+                                return None;
+                            }
+                        };
+
+                        // Parse optional hex-encoded signer seed.
+                        let signer_seed = a.signer_key_hex.as_deref().and_then(|hex_str| {
+                            let bytes = hex::decode(hex_str).ok()?;
+                            let arr: [u8; 32] = bytes.try_into().ok()?;
+                            Some(arr)
+                        });
+                        if signer_seed.is_none() {
+                            warn!("sui adapter: signer_key_hex absent or invalid — read-only mode (no escrow)");
+                        }
+
+                        let cfg = SuiConfig {
+                            rpc_url,
+                            package_id,
+                            treasury_address,
+                            price_per_1k:  a.price_per_1k,
+                            token_id:      if a.token_id.is_empty() { "native".into() } else { a.token_id.clone() },
+                            signer_seed,
+                        };
+                        info!(rpc_url = %cfg.rpc_url, package = %cfg.package_id, "sui settlement adapter loaded");
+                        Some(Arc::new(SuiSettlement::new(cfg)) as Arc<dyn SettlementAdapter>)
+                    }
+                    other if other.starts_with("evm-") => {
+                        let rpc_url = match &a.rpc_url {
+                            Some(u) => u.clone(),
+                            None => {
+                                warn!(id = other, "evm adapter: rpc_url not configured — skipped");
+                                return None;
+                            }
+                        };
+                        let contract_address = match &a.contract_address {
+                            Some(c) => c.clone(),
+                            None => {
+                                warn!(id = other, "evm adapter: contract_address not configured — skipped");
+                                return None;
+                            }
+                        };
+                        let chain_id = match a.chain_id {
+                            Some(id) => id,
+                            None => {
+                                // Fall back to parsing from the "evm-{chain_id}" id string.
+                                match other[4..].parse::<u64>() {
+                                    Ok(id) => id,
+                                    Err(_) => {
+                                        warn!(id = other, "evm adapter: chain_id not configured — skipped");
+                                        return None;
+                                    }
+                                }
+                            }
+                        };
+
+                        let signer_seed = a.signer_key_hex.as_deref().and_then(|hex_str| {
+                            let bytes = hex::decode(hex_str).ok()?;
+                            bytes.try_into().ok()
+                        });
+                        if signer_seed.is_none() {
+                            warn!(
+                                id = other,
+                                chain_id,
+                                "evm adapter: signer_key_hex absent — read-only mode"
+                            );
+                        }
+
+                        let cfg = EvmConfig {
+                            id:               a.id.clone(),
+                            rpc_url,
+                            contract_address,
+                            chain_id,
+                            price_per_1k:     a.price_per_1k,
+                            token_id:         if a.token_id.is_empty() { "native".into() }
+                                              else { a.token_id.clone() },
+                            signer_seed,
+                        };
+                        info!(
+                            id       = %cfg.id,
+                            chain_id = cfg.chain_id,
+                            rpc_url  = %cfg.rpc_url,
+                            "evm settlement adapter loaded"
+                        );
+                        Some(Arc::new(EvmSettlement::new(cfg)) as Arc<dyn SettlementAdapter>)
+                    }
+                    other => {
+                        // Future adapters (Solana, etc.)
                         info!(adapter = %other, "settlement adapter not yet implemented — skipped");
                         None
                     }

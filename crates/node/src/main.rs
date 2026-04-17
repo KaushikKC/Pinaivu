@@ -110,9 +110,10 @@ async fn cmd_start(config: NodeConfig) -> anyhow::Result<()> {
 
     // Start inference API server (used by the TS SDK + web UI in standalone mode)
     let api_state = api::ApiState {
-        engine:  daemon.inference_engine(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        mode:    daemon.mode_str(),
+        engine:      daemon.inference_engine(),
+        settlements: daemon.settlements().to_vec(),
+        version:     env!("CARGO_PKG_VERSION").to_string(),
+        mode:        daemon.mode_str(),
     };
     api::start(config.health.api_port, api_state).await?;
 
