@@ -2532,18 +2532,22 @@ dependencies = [
 name = "node"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.21.7",
  "blockchain-iface",
  "clap",
  "common",
  "context",
+ "ed25519-dalek",
  "futures",
  "hex",
  "inference",
  "p2p",
  "prometheus",
+ "rand 0.8.5",
  "reputation",
  "serde",
  "serde_json",
@@ -2554,6 +2558,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "x25519-dalek",
 ]
 
 [[package]]

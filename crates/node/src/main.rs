@@ -6,6 +6,7 @@ mod api;
 mod cli;
 mod daemon;
 mod health;
+mod identity;
 
 use clap::Parser as _;
 use tracing::info;
@@ -112,6 +113,7 @@ async fn cmd_start(config: NodeConfig) -> anyhow::Result<()> {
     let api_state = api::ApiState {
         engine:      daemon.inference_engine(),
         settlements: daemon.settlements().to_vec(),
+        identity:    daemon.identity(),
         version:     env!("CARGO_PKG_VERSION").to_string(),
         mode:        daemon.mode_str(),
     };

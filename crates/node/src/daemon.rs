@@ -21,6 +21,7 @@ use common::{
     payment::{FreePayment, LocalLedger, PaymentBackend},
     types::{GpuType, InferenceRequest, NodeCapabilities, ReputationScore},
 };
+use crate::identity::NodeIdentity;
 use reputation::{GossipReputationStore, LocalReputationStore, ReputationStore};
 use settlement::{
     ensure_free_fallback, ChannelChainConfig, EvmConfig, EvmSettlement, FreeSettlement,
@@ -74,6 +75,8 @@ pub struct DeAIDaemon {
     engine:      Arc<dyn InferenceEngine>,
     scheduler:   Arc<NodeScheduler>,
     bid_engine:  Arc<BidDecisionEngine>,
+    /// Ed25519 identity keypair — signs every ProofOfInference.
+    identity:    Arc<NodeIdentity>,
     /// Present in `network` and `network_paid` modes; `None` in `standalone`.
     p2p:         Option<(P2PService, tokio::sync::mpsc::Receiver<P2PEvent>)>,
     /// Receives new Merkle roots from `GossipReputationStore`; forwarded to P2P.
@@ -344,6 +347,10 @@ impl DeAIDaemon {
         );
         let engine_ref = Arc::clone(&engine);
 
+        // ── Node identity keypair ─────────────────────────────────────────────
+        let identity_path = expand_tilde("~/.deai/node_identity.key");
+        let identity = NodeIdentity::load_or_generate(&identity_path)?;
+
         // ── Bid decision engine ───────────────────────────────────────────────
         // BidDecisionEngine takes the full NodeConfig — it reads pricing, GPU,
         // privacy, and network sections itself.
@@ -412,6 +419,7 @@ impl DeAIDaemon {
             engine: engine_ref,
             scheduler,
             bid_engine,
+            identity,
             p2p,
             rep_root_rx,
         })
@@ -425,6 +433,11 @@ impl DeAIDaemon {
 
     pub fn mode_str(&self) -> String {
         format!("{:?}", self.config.node.mode)
+    }
+
+    /// Returns the node identity keypair (for signing proofs in the API server).
+    pub fn identity(&self) -> Arc<NodeIdentity> {
+        Arc::clone(&self.identity)
     }
 
     /// Returns the inference engine for the API server.
