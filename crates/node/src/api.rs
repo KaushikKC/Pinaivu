@@ -666,7 +666,8 @@ async fn settle_and_build_receipt(
     prompt_bytes:       &[u8],
     output_bytes:       &[u8],
 ) -> Option<ReceiptInfo> {
-    let wanted = wanted?;
+    let default_wanted = vec!["receipt".to_string()];
+    let wanted = wanted.unwrap_or(&default_wanted);
     let wanted_strs: Vec<&str> = wanted.iter().map(String::as_str).collect();
 
     let adapter = select_adapter(&state.settlements, &wanted_strs).or_else(|| {
