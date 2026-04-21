@@ -3,7 +3,7 @@
 import { memo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { User, Bot, ChevronDown, ChevronRight, Lock, Server, Clock, ShieldCheck, FileText, CheckCircle2, XCircle } from 'lucide-react';
+import { User, Bot, ChevronDown, ChevronRight, Lock, Server, Network, Clock, FileText, CheckCircle2, XCircle } from 'lucide-react';
 import clsx from 'clsx';
 import type { Message, MessageReceipt } from '@/lib/session-store';
 
@@ -126,11 +126,20 @@ export const MessageBubble = memo(function MessageBubble({ message, streaming }:
           {/* Trust badges — only on assistant messages */}
           {!isUser && (
             <span className="flex items-center gap-1.5">
-              <span className="inline-flex items-center gap-1 text-[9px] font-medium px-1.5 py-0.5 rounded
-                               bg-emerald-900/30 border border-emerald-700/40 text-emerald-400">
-                <Server className="w-2.5 h-2.5" />
-                Local
-              </span>
+              {message.nodeId ? (
+                <span className="inline-flex items-center gap-1 text-[9px] font-medium px-1.5 py-0.5 rounded
+                                 bg-violet-900/30 border border-violet-700/40 text-violet-300"
+                      title={`Network node: ${message.nodeId}`}>
+                  <Network className="w-2.5 h-2.5" />
+                  Network
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[9px] font-medium px-1.5 py-0.5 rounded
+                                 bg-emerald-900/30 border border-emerald-700/40 text-emerald-400">
+                  <Server className="w-2.5 h-2.5" />
+                  Local
+                </span>
+              )}
               <span className="inline-flex items-center gap-1 text-[9px] font-medium px-1.5 py-0.5 rounded
                                bg-blue-900/30 border border-blue-700/40 text-blue-400">
                 <Lock className="w-2.5 h-2.5" />

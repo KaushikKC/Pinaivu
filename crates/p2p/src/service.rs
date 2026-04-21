@@ -402,21 +402,39 @@ async fn swarm_task(
     let mut announce_seq: u64 = 0;
 
     // Announce our capabilities periodically so peers that join later learn about us.
-    let mut announce_interval = tokio::time::interval(Duration::from_secs(15));
+    let mut announce_interval = tokio::time::interval(Duration::from_secs(5));
     announce_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     announce_interval.tick().await; // consume the immediate first tick
 
+    // Delayed announce fires ~1s after a new peer connects, by which point gossipsub
+    // GRAFT has run and the mesh is ready to relay the message.
+    let mut delayed_announce: Option<tokio::time::Instant> = None;
+
     loop {
+        // Time until the next delayed announce fires (or a far future if not set).
+        let delay_sleep = async {
+            match delayed_announce {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None     => std::future::pending().await,
+            }
+        };
+
         tokio::select! {
             // ---- periodic capability announce ----
             _ = announce_interval.tick() => {
                 publish_announce(&own_caps, &mut announce_seq, &mut swarm);
             }
 
+            // ---- delayed post-connection announce ----
+            _ = delay_sleep => {
+                delayed_announce = None;
+                publish_announce(&own_caps, &mut announce_seq, &mut swarm);
+            }
+
             // ---- swarm events ----
             event = swarm.next() => {
                 let Some(event) = event else { break };
-                handle_swarm_event(event, &event_tx, &mut model_topics, &mut swarm, &own_caps, &mut announce_seq).await;
+                handle_swarm_event(event, &event_tx, &mut model_topics, &mut swarm, &own_caps, &mut announce_seq, &mut delayed_announce).await;
             }
 
             // ---- commands from the rest of the node ----
@@ -538,12 +556,13 @@ fn handle_command(
 // ---------------------------------------------------------------------------
 
 async fn handle_swarm_event(
-    event:        SwarmEvent<crate::behaviour::DeAIBehaviourEvent>,
-    event_tx:     &mpsc::Sender<P2PEvent>,
-    model_topics: &HashMap<libp2p::gossipsub::TopicHash, String>,
-    swarm:        &mut Swarm<DeAIBehaviour>,
-    own_caps:     &NodeCapabilities,
-    announce_seq: &mut u64,
+    event:                SwarmEvent<crate::behaviour::DeAIBehaviourEvent>,
+    event_tx:             &mpsc::Sender<P2PEvent>,
+    model_topics:         &HashMap<libp2p::gossipsub::TopicHash, String>,
+    swarm:                &mut Swarm<DeAIBehaviour>,
+    own_caps:             &NodeCapabilities,
+    announce_seq:         &mut u64,
+    delayed_announce_out: &mut Option<tokio::time::Instant>,
 ) {
     match event {
         SwarmEvent::NewListenAddr { address, .. } => {
@@ -553,6 +572,11 @@ async fn handle_swarm_event(
         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
             info!(%peer_id, "peer connected");
             let _ = event_tx.send(P2PEvent::PeerConnected(peer_id)).await;
+            // Schedule a re-announce ~1s from now. By then gossipsub GRAFT will
+            // have run and the new peer will be in the mesh to receive it.
+            *delayed_announce_out = Some(
+                tokio::time::Instant::now() + Duration::from_millis(1000)
+            );
         }
 
         SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {

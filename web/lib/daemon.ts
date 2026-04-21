@@ -53,6 +53,58 @@ export interface TokenChunk {
 }
 
 // ---------------------------------------------------------------------------
+// Marketplace types
+// ---------------------------------------------------------------------------
+
+export interface SettlementOffer {
+  settlement_id: string;
+  price_per_1k:  number;
+  token_id:      string;
+}
+
+export interface MarketplaceBid {
+  node_peer_id:         string;
+  api_url:              string | null;
+  estimated_latency_ms: number;
+  current_load_pct:     number;
+  model_id:             string;
+  reputation_score:     number;
+  accepted_settlements: SettlementOffer[];
+}
+
+export interface MarketplaceRequest {
+  model:                string;
+  max_tokens?:          number;
+  accepted_settlements?: string[];
+  bid_timeout_ms?:      number;
+}
+
+/** Returns bids sorted by price ascending (cheapest first). */
+export async function fetchMarketplaceBids(req: MarketplaceRequest): Promise<MarketplaceBid[]> {
+  const resp = await fetch(`${BASE}/v1/marketplace/request`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(req),
+  });
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`marketplace error ${resp.status}: ${body}`);
+  }
+  const bids = await resp.json() as MarketplaceBid[];
+  return bids.sort((a, b) => {
+    const priceA = a.accepted_settlements[0]?.price_per_1k ?? Infinity;
+    const priceB = b.accepted_settlements[0]?.price_per_1k ?? Infinity;
+    return priceA - priceB;
+  });
+}
+
+/** Pick the best bid: lowest price among nodes that have an api_url. */
+export function pickBestBid(bids: MarketplaceBid[]): MarketplaceBid | null {
+  const reachable = bids.filter(b => b.api_url);
+  return reachable[0] ?? null;
+}
+
+// ---------------------------------------------------------------------------
 // Health / status
 // ---------------------------------------------------------------------------
 
@@ -95,10 +147,21 @@ export async function fetchModels(): Promise<ModelInfo[]> {
  * }
  * ```
  */
-export async function* streamInfer(req: InferRequest): AsyncGenerator<string | InferenceReceipt> {
-  const resp = await fetch(`${BASE}/v1/infer`, {
+/**
+ * @param nodeApiUrl  If provided, route inference through this node instead of the local daemon.
+ *                    The request goes via /api/node-proxy to avoid browser CORS restrictions.
+ */
+export async function* streamInfer(
+  req: InferRequest,
+  nodeApiUrl?: string,
+): AsyncGenerator<string | InferenceReceipt> {
+  const url     = nodeApiUrl ? '/api/node-proxy' : `${BASE}/v1/infer`;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (nodeApiUrl) headers['X-Node-Url'] = nodeApiUrl;
+
+  const resp = await fetch(url, {
     method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body:    JSON.stringify(req),
   });
 

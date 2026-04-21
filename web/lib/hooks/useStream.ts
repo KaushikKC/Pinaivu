@@ -1,7 +1,14 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
-import { streamInfer, type InferRequest, type InferenceReceipt } from '../daemon';
+import {
+  streamInfer,
+  fetchMarketplaceBids,
+  pickBestBid,
+  type InferRequest,
+  type InferenceReceipt,
+  type MarketplaceBid,
+} from '../daemon';
 import {
   appendMessage,
   updateLastAssistantMessage,
@@ -11,9 +18,11 @@ import {
 } from '../session-store';
 
 export interface StreamState {
-  streaming:    boolean;
+  streaming:     boolean;
   streamingText: string;
-  error:        string | null;
+  error:         string | null;
+  /** The node that won the marketplace bid and is executing this request. */
+  executingNode: MarketplaceBid | null;
 }
 
 export function useStream(
@@ -24,6 +33,7 @@ export function useStream(
     streaming:     false,
     streamingText: '',
     error:         null,
+    executingNode: null,
   });
 
   const abortRef = useRef<AbortController | null>(null);
@@ -41,13 +51,33 @@ export function useStream(
       const afterAppend = getSession(session.id);
       if (afterAppend) onUpdate(afterAppend);
 
-      setState({ streaming: true, streamingText: '', error: null });
+      setState({ streaming: true, streamingText: '', error: null, executingNode: null });
 
       let accumulated = '';
       let receipt: MessageReceipt | undefined;
       const startMs = Date.now();
 
       try {
+        // --- Marketplace discovery: find best node to execute this request ---
+        let winnerApiUrl: string | undefined;
+        let executingNode: MarketplaceBid | null = null;
+        try {
+          const bids = await fetchMarketplaceBids({
+            model:                modelId,
+            max_tokens:           2048,
+            accepted_settlements: ['receipt'],
+            bid_timeout_ms:       2000,
+          });
+          const winner = pickBestBid(bids);
+          if (winner) {
+            executingNode = winner;
+            winnerApiUrl  = winner.api_url ?? undefined;
+            setState(prev => ({ ...prev, executingNode: winner }));
+          }
+        } catch {
+          // No P2P / standalone mode — fall through to local inference
+        }
+
         const req: InferRequest = {
           model_id:   modelId,
           prompt:     userText,
@@ -55,7 +85,7 @@ export function useStream(
           max_tokens: 2048,
         };
 
-        for await (const chunk of streamInfer(req)) {
+        for await (const chunk of streamInfer(req, winnerApiUrl)) {
           if (typeof chunk === 'string') {
             accumulated += chunk;
             setState(prev => ({ ...prev, streamingText: accumulated }));
@@ -78,13 +108,14 @@ export function useStream(
 
         updateLastAssistantMessage(session.id, accumulated, {
           durationMs: Date.now() - startMs,
+          nodeId:     executingNode?.node_peer_id,
           receipt,
         });
-        setState({ streaming: false, streamingText: '', error: null });
+        setState(prev => ({ ...prev, streaming: false, streamingText: '', error: null }));
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         updateLastAssistantMessage(session.id, `[Error: ${msg}]`);
-        setState({ streaming: false, streamingText: '', error: msg });
+        setState(prev => ({ ...prev, streaming: false, streamingText: '', error: msg }));
       } finally {
         const updated = getSession(session.id);
         if (updated) onUpdate(updated);

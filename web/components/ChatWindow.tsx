@@ -7,7 +7,7 @@ import {
   useCallback,
   type KeyboardEvent,
 } from 'react';
-import { Send, StopCircle, AlertTriangle, Cpu, Lock, ShieldCheck } from 'lucide-react';
+import { Send, StopCircle, AlertTriangle, Cpu, Lock, ShieldCheck, Network } from 'lucide-react';
 import clsx from 'clsx';
 import { MessageBubble } from './MessageBubble';
 import { useStream } from '@/lib/hooks/useStream';
@@ -16,7 +16,7 @@ import {
   appendMessage,
   type SessionRecord,
 } from '@/lib/session-store';
-import { fetchModels } from '@/lib/daemon';
+import { fetchModels, fetchPeers } from '@/lib/daemon';
 
 interface Props {
   sessionId: string;
@@ -28,6 +28,7 @@ export function ChatWindow({ sessionId }: Props) {
   const [model,      setModel]      = useState('');
   const [models,     setModels]     = useState<string[]>([]);
   const [daemonDown, setDaemonDown] = useState(false);
+  const [peerCount,  setPeerCount]  = useState<number | null>(null);
 
   const bottomRef   = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -52,7 +53,21 @@ export function ChatWindow({ sessionId }: Props) {
       .catch(() => setDaemonDown(true));
   }, []);
 
-  const { streaming, streamingText, error, send, abort } = useStream(
+  // Poll peer count every 10 seconds
+  useEffect(() => {
+    let cancelled = false;
+    async function poll() {
+      try {
+        const { count } = await fetchPeers();
+        if (!cancelled) setPeerCount(count);
+      } catch { /* standalone or daemon down */ }
+    }
+    poll();
+    const timer = setInterval(poll, 10_000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+
+  const { streaming, streamingText, error, executingNode, send, abort } = useStream(
     session ?? { id: sessionId, modelId: model, title: '', createdAt: 0, updatedAt: 0, messages: [] },
     (updated) => setSession(updated),
   );
@@ -123,6 +138,18 @@ export function ChatWindow({ sessionId }: Props) {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Network / Standalone badge */}
+          {peerCount !== null && peerCount > 0 ? (
+            <div className="flex items-center gap-1 text-[10px] text-violet-300 font-medium">
+              <Network className="w-3 h-3" />
+              <span>{peerCount} peer{peerCount !== 1 ? 's' : ''}</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1 text-[10px] text-muted font-medium">
+              <Network className="w-3 h-3" />
+              <span>Standalone</span>
+            </div>
+          )}
           <div className="flex items-center gap-1.5 text-[10px] text-emerald-400 font-medium">
             <ShieldCheck className="w-3 h-3" />
             <span>No logs · Private</span>
@@ -172,7 +199,26 @@ export function ChatWindow({ sessionId }: Props) {
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-[11px] font-medium text-muted mb-1.5">DeAI</div>
-              <p className="text-sm text-gray-400">Generating…</p>
+              {executingNode ? (
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-1.5 text-[10px] text-emerald-400">
+                    <Network className="w-3 h-3" />
+                    <span className="font-medium">Executing on network node</span>
+                  </div>
+                  <div className="font-mono text-[10px] text-muted truncate max-w-xs">
+                    {executingNode.node_peer_id}
+                  </div>
+                  <div className="flex items-center gap-2 text-[10px] text-muted">
+                    <span>{executingNode.model_id}</span>
+                    <span>·</span>
+                    <span>{executingNode.accepted_settlements[0]?.price_per_1k ?? '?'} /1k tokens</span>
+                    <span>·</span>
+                    <span>~{executingNode.estimated_latency_ms}ms</span>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-gray-400">Generating…</p>
+              )}
             </div>
           </div>
         )}
