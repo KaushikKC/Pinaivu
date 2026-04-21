@@ -20,7 +20,7 @@ import {
   type SessionRecord,
 } from '@/lib/session-store';
 
-const DEFAULT_MODEL = 'llama3.1:8b';
+const DEFAULT_MODEL = 'deepseek-r1:7b';
 
 interface Props {
   collapsed:  boolean;

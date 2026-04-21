@@ -34,9 +34,22 @@ export interface InferRequest {
   temperature?: number;
 }
 
+export interface InferenceReceipt {
+  proof_id:            string;
+  settlement_id:       string;
+  proof_valid:         boolean;
+  input_tokens:        number;
+  output_tokens:       number;
+  latency_ms:          number;
+  node_pubkey:         string;
+  signature:           string;
+  canonical_bytes_hex: string;
+}
+
 export interface TokenChunk {
   token:    string;
   is_final: boolean;
+  receipt?: InferenceReceipt;
 }
 
 // ---------------------------------------------------------------------------
@@ -50,15 +63,20 @@ export async function fetchHealth(): Promise<HealthResponse> {
 }
 
 export async function fetchPeers(): Promise<PeersResponse> {
-  const resp = await fetch(`${BASE}/peers`, { cache: 'no-store' });
+  const resp = await fetch(`${BASE}/v1/peers`, { cache: 'no-store' });
   if (!resp.ok) throw new Error(`peers fetch failed: ${resp.status}`);
-  return resp.json();
+  // /v1/peers returns NodeCapabilities[] — reshape to { count, peers }
+  const caps = await resp.json() as Array<{ peer_id: string }>;
+  return { count: caps.length, peers: caps.map(c => c.peer_id) };
 }
 
 export async function fetchModels(): Promise<ModelInfo[]> {
   const resp = await fetch(`${BASE}/v1/models`, { cache: 'no-store' });
   if (!resp.ok) throw new Error(`models fetch failed: ${resp.status}`);
-  return resp.json();
+  // Handle OpenAI list format { object: "list", data: [{ id }] }
+  const data = await resp.json();
+  const list: Array<{ id?: string; name?: string }> = Array.isArray(data) ? data : (data.data ?? []);
+  return list.map(m => ({ name: m.id ?? m.name ?? '' }));
 }
 
 // ---------------------------------------------------------------------------
@@ -77,7 +95,7 @@ export async function fetchModels(): Promise<ModelInfo[]> {
  * }
  * ```
  */
-export async function* streamInfer(req: InferRequest): AsyncGenerator<string> {
+export async function* streamInfer(req: InferRequest): AsyncGenerator<string | InferenceReceipt> {
   const resp = await fetch(`${BASE}/v1/infer`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -108,6 +126,7 @@ export async function* streamInfer(req: InferRequest): AsyncGenerator<string> {
       try {
         const chunk = JSON.parse(line) as TokenChunk;
         if (chunk.token) yield chunk.token;
+        if (chunk.receipt) yield chunk.receipt;
         if (chunk.is_final) return;
       } catch {
         // Malformed line — skip

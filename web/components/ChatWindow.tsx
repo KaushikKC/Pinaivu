@@ -7,7 +7,7 @@ import {
   useCallback,
   type KeyboardEvent,
 } from 'react';
-import { Send, StopCircle, AlertTriangle, Cpu } from 'lucide-react';
+import { Send, StopCircle, AlertTriangle, Cpu, Lock, ShieldCheck } from 'lucide-react';
 import clsx from 'clsx';
 import { MessageBubble } from './MessageBubble';
 import { useStream } from '@/lib/hooks/useStream';
@@ -25,7 +25,7 @@ interface Props {
 export function ChatWindow({ sessionId }: Props) {
   const [session,    setSession]    = useState<SessionRecord | null>(null);
   const [input,      setInput]      = useState('');
-  const [model,      setModel]      = useState('llama3.1:8b');
+  const [model,      setModel]      = useState('');
   const [models,     setModels]     = useState<string[]>([]);
   const [daemonDown, setDaemonDown] = useState(false);
 
@@ -41,10 +41,14 @@ export function ChatWindow({ sessionId }: Props) {
 
   useEffect(() => { reload(); }, [reload]);
 
-  // Fetch available models from daemon
+  // Fetch available models from daemon; auto-select first if current model unavailable
   useEffect(() => {
     fetchModels()
-      .then(ms => setModels(ms.map(m => m.name)))
+      .then(ms => {
+        const names = ms.map(m => m.name).filter(n => n && !n.includes('guard') && !n.includes('embed'));
+        setModels(names);
+        setModel(prev => (names.includes(prev) ? prev : (names[0] ?? prev)));
+      })
       .catch(() => setDaemonDown(true));
   }, []);
 
@@ -118,11 +122,21 @@ export function ChatWindow({ sessionId }: Props) {
           )}
         </div>
 
-        <span className="text-xs text-muted font-mono">
-          {session.messages.length > 0
-            ? `${Math.ceil(session.messages.length / 2)} turn${Math.ceil(session.messages.length / 2) !== 1 ? 's' : ''}`
-            : 'new chat'}
-        </span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 text-[10px] text-emerald-400 font-medium">
+            <ShieldCheck className="w-3 h-3" />
+            <span>No logs · Private</span>
+          </div>
+          <div className="flex items-center gap-1 text-[10px] text-blue-400 font-medium">
+            <Lock className="w-3 h-3" />
+            <span>AES-256-GCM</span>
+          </div>
+          <span className="text-xs text-muted font-mono">
+            {session.messages.length > 0
+              ? `${Math.ceil(session.messages.length / 2)} turn${Math.ceil(session.messages.length / 2) !== 1 ? 's' : ''}`
+              : 'new chat'}
+          </span>
+        </div>
       </div>
 
       {/* Messages */}

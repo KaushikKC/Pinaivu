@@ -11,12 +11,26 @@
 
 export type Role = 'user' | 'assistant';
 
+export interface MessageReceipt {
+  proofId:       string;
+  settlementId:  string;
+  proofValid:    boolean;
+  inputTokens:   number;
+  outputTokens:  number;
+  latencyMs:     number;
+  nodePubkey:    string;
+  signature:     string;
+  canonicalHex:  string;
+}
+
 export interface Message {
-  id:        string;
-  role:      Role;
-  content:   string;
-  timestamp: number;
-  nodeId?:   string;
+  id:          string;
+  role:        Role;
+  content:     string;
+  timestamp:   number;
+  nodeId?:     string;
+  durationMs?: number;
+  receipt?:    MessageReceipt;
 }
 
 export interface SessionRecord {
@@ -117,7 +131,11 @@ export function updateSessionTitle(sessionId: string, title: string): void {
 }
 
 /** Update the last assistant message's content (used during streaming). */
-export function updateLastAssistantMessage(sessionId: string, content: string): void {
+export function updateLastAssistantMessage(
+  sessionId:  string,
+  content:    string,
+  extra?:     Partial<Pick<Message, 'durationMs' | 'nodeId' | 'receipt'>>,
+): void {
   const all = readAll();
   const idx = all.findIndex(s => s.id === sessionId);
   if (idx === -1) return;
@@ -125,7 +143,7 @@ export function updateLastAssistantMessage(sessionId: string, content: string): 
   const msgs = [...all[idx].messages];
   const lastIdx = msgs.length - 1;
   if (lastIdx >= 0 && msgs[lastIdx].role === 'assistant') {
-    msgs[lastIdx] = { ...msgs[lastIdx], content };
+    msgs[lastIdx] = { ...msgs[lastIdx], content, ...extra };
     all[idx] = { ...all[idx], messages: msgs, updatedAt: Date.now() };
     writeAll(all);
   }

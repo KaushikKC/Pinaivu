@@ -1,11 +1,12 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
-import { streamInfer, type InferRequest } from '../daemon';
+import { streamInfer, type InferRequest, type InferenceReceipt } from '../daemon';
 import {
   appendMessage,
   updateLastAssistantMessage,
   type SessionRecord,
+  type MessageReceipt,
 } from '../session-store';
 
 export interface StreamState {
@@ -39,6 +40,8 @@ export function useStream(
       setState({ streaming: true, streamingText: '', error: null });
 
       let accumulated = '';
+      let receipt: MessageReceipt | undefined;
+      const startMs = Date.now();
 
       try {
         const req: InferRequest = {
@@ -48,12 +51,31 @@ export function useStream(
           max_tokens: 2048,
         };
 
-        for await (const token of streamInfer(req)) {
-          accumulated += token;
-          setState(prev => ({ ...prev, streamingText: accumulated }));
-          updateLastAssistantMessage(session.id, accumulated);
+        for await (const chunk of streamInfer(req)) {
+          if (typeof chunk === 'string') {
+            accumulated += chunk;
+            setState(prev => ({ ...prev, streamingText: accumulated }));
+            updateLastAssistantMessage(session.id, accumulated);
+          } else {
+            // InferenceReceipt arrived on final chunk
+            receipt = {
+              proofId:      chunk.proof_id,
+              settlementId: chunk.settlement_id,
+              proofValid:   chunk.proof_valid,
+              inputTokens:  chunk.input_tokens,
+              outputTokens: chunk.output_tokens,
+              latencyMs:    chunk.latency_ms,
+              nodePubkey:   chunk.node_pubkey,
+              signature:    chunk.signature,
+              canonicalHex: chunk.canonical_bytes_hex,
+            };
+          }
         }
 
+        updateLastAssistantMessage(session.id, accumulated, {
+          durationMs: Date.now() - startMs,
+          receipt,
+        });
         setState({ streaming: false, streamingText: '', error: null });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
