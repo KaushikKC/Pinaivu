@@ -13,7 +13,7 @@ use libp2p::{
 /// - `autonat`    — detect NAT situation (needed before relay decisions)
 /// - `mdns`       — zero-config LAN peer discovery (dev / local testing)
 #[derive(NetworkBehaviour)]
-pub struct DeAIBehaviour {
+pub struct PinaivuBehaviour {
     pub gossipsub: gossipsub::Behaviour,
     pub kademlia:  kad::Behaviour<kad::store::MemoryStore>,
     pub identify:  identify::Behaviour,

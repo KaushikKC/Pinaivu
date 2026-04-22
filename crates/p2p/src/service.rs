@@ -23,7 +23,7 @@ use common::{
 };
 
 use crate::{
-    behaviour::DeAIBehaviour,
+    behaviour::PinaivuBehaviour,
     topics,
 };
 
@@ -213,7 +213,7 @@ struct AnnounceEnvelope {
 fn publish_announce(
     caps:  &NodeCapabilities,
     seq:   &mut u64,
-    swarm: &mut Swarm<DeAIBehaviour>,
+    swarm: &mut Swarm<PinaivuBehaviour>,
 ) {
     *seq += 1;
     let envelope = AnnounceEnvelope { caps: caps.clone(), seq: *seq };
@@ -270,7 +270,7 @@ pub fn load_or_create_keypair(data_dir: &str) -> anyhow::Result<libp2p::identity
     }
 }
 
-fn build_swarm(config: &NodeConfig) -> anyhow::Result<Swarm<DeAIBehaviour>> {
+fn build_swarm(config: &NodeConfig) -> anyhow::Result<Swarm<PinaivuBehaviour>> {
     let keypair = load_or_create_keypair(&config.node.data_dir)?;
     let swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
@@ -351,7 +351,7 @@ fn build_swarm(config: &NodeConfig) -> anyhow::Result<Swarm<DeAIBehaviour>> {
             let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)
                 .expect("mdns init");
 
-            Ok(DeAIBehaviour { gossipsub, kademlia, identify, ping, autonat, mdns })
+            Ok(PinaivuBehaviour { gossipsub, kademlia, identify, ping, autonat, mdns })
         })?
         .with_swarm_config(|cfg: libp2p::swarm::Config| {
             cfg.with_idle_connection_timeout(Duration::from_secs(60))
@@ -366,7 +366,7 @@ fn build_swarm(config: &NodeConfig) -> anyhow::Result<Swarm<DeAIBehaviour>> {
 // ---------------------------------------------------------------------------
 
 async fn swarm_task(
-    mut swarm:   Swarm<DeAIBehaviour>,
+    mut swarm:   Swarm<PinaivuBehaviour>,
     mut cmd_rx:  mpsc::Receiver<SwarmCommand>,
     event_tx:    mpsc::Sender<P2PEvent>,
     config:      NodeConfig,
@@ -453,7 +453,7 @@ async fn swarm_task(
 
 fn handle_command(
     cmd: SwarmCommand,
-    swarm: &mut Swarm<DeAIBehaviour>,
+    swarm: &mut Swarm<PinaivuBehaviour>,
     model_topics: &mut HashMap<libp2p::gossipsub::TopicHash, String>,
 ) {
     match cmd {
@@ -556,10 +556,10 @@ fn handle_command(
 // ---------------------------------------------------------------------------
 
 async fn handle_swarm_event(
-    event:                SwarmEvent<crate::behaviour::DeAIBehaviourEvent>,
+    event:                SwarmEvent<crate::behaviour::PinaivuBehaviourEvent>,
     event_tx:             &mpsc::Sender<P2PEvent>,
     model_topics:         &HashMap<libp2p::gossipsub::TopicHash, String>,
-    swarm:                &mut Swarm<DeAIBehaviour>,
+    swarm:                &mut Swarm<PinaivuBehaviour>,
     own_caps:             &NodeCapabilities,
     announce_seq:         &mut u64,
     delayed_announce_out: &mut Option<tokio::time::Instant>,
@@ -584,13 +584,13 @@ async fn handle_swarm_event(
             let _ = event_tx.send(P2PEvent::PeerDisconnected(peer_id)).await;
         }
 
-        SwarmEvent::Behaviour(crate::behaviour::DeAIBehaviourEvent::Gossipsub(
+        SwarmEvent::Behaviour(crate::behaviour::PinaivuBehaviourEvent::Gossipsub(
             gossipsub::Event::Message { message, .. },
         )) => {
             dispatch_gossipsub_message(message, event_tx, model_topics).await;
         }
 
-        SwarmEvent::Behaviour(crate::behaviour::DeAIBehaviourEvent::Gossipsub(
+        SwarmEvent::Behaviour(crate::behaviour::PinaivuBehaviourEvent::Gossipsub(
             gossipsub::Event::Subscribed { peer_id, topic },
         )) => {
             debug!(%peer_id, %topic, "gossipsub: peer subscribed");
@@ -601,19 +601,19 @@ async fn handle_swarm_event(
             }
         }
 
-        SwarmEvent::Behaviour(crate::behaviour::DeAIBehaviourEvent::Gossipsub(
+        SwarmEvent::Behaviour(crate::behaviour::PinaivuBehaviourEvent::Gossipsub(
             gossipsub::Event::Unsubscribed { peer_id, topic },
         )) => {
             debug!(%peer_id, %topic, "gossipsub: peer unsubscribed");
         }
 
-        SwarmEvent::Behaviour(crate::behaviour::DeAIBehaviourEvent::Gossipsub(
+        SwarmEvent::Behaviour(crate::behaviour::PinaivuBehaviourEvent::Gossipsub(
             gossipsub::Event::GossipsubNotSupported { peer_id },
         )) => {
             warn!(%peer_id, "gossipsub not supported by peer");
         }
 
-        SwarmEvent::Behaviour(crate::behaviour::DeAIBehaviourEvent::Mdns(
+        SwarmEvent::Behaviour(crate::behaviour::PinaivuBehaviourEvent::Mdns(
             mdns::Event::Discovered(peers),
         )) => {
             for (peer_id, addr) in peers {
@@ -627,7 +627,7 @@ async fn handle_swarm_event(
             }
         }
 
-        SwarmEvent::Behaviour(crate::behaviour::DeAIBehaviourEvent::Mdns(
+        SwarmEvent::Behaviour(crate::behaviour::PinaivuBehaviourEvent::Mdns(
             mdns::Event::Expired(peers),
         )) => {
             for (peer_id, _) in peers {
@@ -635,13 +635,13 @@ async fn handle_swarm_event(
             }
         }
 
-        SwarmEvent::Behaviour(crate::behaviour::DeAIBehaviourEvent::Identify(
+        SwarmEvent::Behaviour(crate::behaviour::PinaivuBehaviourEvent::Identify(
             identify::Event::Received { peer_id, info, .. },
         )) => {
             debug!(%peer_id, protocols = ?info.protocols, "identify received");
         }
 
-        SwarmEvent::Behaviour(crate::behaviour::DeAIBehaviourEvent::Ping(
+        SwarmEvent::Behaviour(crate::behaviour::PinaivuBehaviourEvent::Ping(
             ping::Event { peer, result, .. },
         )) => {
             match result {

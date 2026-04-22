@@ -1,4 +1,4 @@
-//! `deai-node` — entry point.
+//! `pinaivu` — entry point.
 //!
 //! Parses CLI, loads config, assembles services, runs the daemon.
 
@@ -33,7 +33,7 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("failed to read config at {}: {e}", config_path.display()))?
     } else {
         eprintln!(
-            "Config not found at {}. Run `deai-node init` first.",
+            "Config not found at {}. Run `pinaivu init` first.",
             config_path.display()
         );
         std::process::exit(1);
@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Start { .. } => cmd_start(config).await?,
 
         Commands::Status => {
-            println!("deai-node v{}", env!("CARGO_PKG_VERSION"));
+            println!("pinaivu v{}", env!("CARGO_PKG_VERSION"));
             println!("mode:    {:?}", config.node.mode);
             println!("storage: {}", config.storage.backend);
             println!("metrics: :{}", config.health.metrics_port);
@@ -86,7 +86,7 @@ fn cmd_init(force: bool, cli: &Cli) -> anyhow::Result<()> {
     let config = NodeConfig::default();
     config.write_to_file(&path)?;
     println!("Config written to {}", path.display());
-    println!("Edit it to configure your node, then run `deai-node start`.");
+    println!("Edit it to configure your node, then run `pinaivu start`.");
     Ok(())
 }
 
@@ -95,7 +95,7 @@ async fn cmd_start(config: NodeConfig) -> anyhow::Result<()> {
         version = env!("CARGO_PKG_VERSION"),
         mode    = ?config.node.mode,
         storage = %config.storage.backend,
-        "starting deai-node"
+        "starting pinaivu"
     );
 
     // Assemble daemon

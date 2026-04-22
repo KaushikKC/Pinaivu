@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum DeAIError {
+pub enum PinaivuError {
     // --- Network ---
     #[error("P2P error: {0}")]
     P2P(String),
@@ -70,4 +70,4 @@ pub enum DeAIError {
     Anyhow(#[from] anyhow::Error),
 }
 
-pub type Result<T> = std::result::Result<T, DeAIError>;
+pub type Result<T> = std::result::Result<T, PinaivuError>;

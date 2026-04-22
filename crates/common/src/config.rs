@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Top-level node configuration, deserialised from `~/.deai/config.toml`.
+/// Top-level node configuration, deserialised from `~/.pinaivu/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NodeConfig {
@@ -45,7 +45,7 @@ impl NodeConfig {
         Ok(cfg)
     }
 
-    /// Write config to a TOML file (used by `deai-node init`).
+    /// Write config to a TOML file (used by `pinaivu init`).
     pub fn write_to_file(&self, path: &std::path::Path) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -91,7 +91,7 @@ impl Default for NodeSection {
         Self {
             mode:      OperationMode::Standalone,
             node_id:   String::new(),
-            data_dir:  "~/.deai/data".into(),
+            data_dir:  "~/.pinaivu/data".into(),
             log_level: "info".into(),
         }
     }
@@ -122,7 +122,7 @@ impl Default for StorageSection {
     fn default() -> Self {
         Self {
             backend:           "local".into(),
-            sessions_dir:      "~/.deai/sessions".into(),
+            sessions_dir:      "~/.pinaivu/sessions".into(),
             ipfs_api:          "http://localhost:5001".into(),
             walrus_aggregator: "https://aggregator.walrus.site".into(),
             walrus_publisher:  "https://publisher.walrus.site".into(),
@@ -187,8 +187,8 @@ impl Default for NetworkSection {
         Self {
             listen_port:    4001,
             bootstrap_nodes: vec![
-                "/dns4/seed1.deai.network/tcp/4001/p2p/QmPlaceholder1".into(),
-                "/dns4/seed2.deai.network/tcp/4001/p2p/QmPlaceholder2".into(),
+                "/dns4/bootstrap1.pinaivu.ai/tcp/4001/p2p/QmPlaceholder1".into(),
+                "/dns4/bootstrap2.pinaivu.ai/tcp/4001/p2p/QmPlaceholder2".into(),
             ],
             max_peers:     50,
             nat_traversal: true,

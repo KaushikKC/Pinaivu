@@ -120,7 +120,7 @@ export const MessageBubble = memo(function MessageBubble({ message, streaming }:
         {/* Label row */}
         <div className="flex items-center gap-2 mb-1.5">
           <span className="text-[11px] font-medium text-muted">
-            {isUser ? 'You' : 'DeAI'}
+            {isUser ? 'You' : 'Pinaivu'}
           </span>
 
           {/* Trust badges — only on assistant messages */}

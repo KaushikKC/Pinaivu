@@ -17,7 +17,7 @@ export function AppShell({ children }: Props) {
       {/* Top bar */}
       <header className="flex items-center justify-between px-4 py-2 border-b border-surface-2 bg-surface-1 flex-shrink-0">
         <div className="flex items-center gap-2">
-          <span className="text-base font-bold text-accent tracking-wide">DeAI</span>
+          <span className="text-base font-bold text-accent tracking-wide">Pinaivu</span>
           <span className="text-[10px] font-mono text-muted border border-surface-3 rounded px-1">BETA</span>
         </div>
         <WalletConnect />

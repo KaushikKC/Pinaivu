@@ -91,7 +91,7 @@ export function SessionSidebar({ collapsed, onCollapse }: Props) {
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-3 border-b border-surface-2">
         {!collapsed && (
-          <span className="text-sm font-semibold text-accent tracking-wide">DeAI</span>
+          <span className="text-sm font-semibold text-accent tracking-wide">Pinaivu</span>
         )}
         <button
           onClick={() => onCollapse(!collapsed)}

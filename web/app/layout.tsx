@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title:       'DeAI — Decentralised AI',
+  title:       'Pinaivu — Decentralised AI',
   description: 'Private, censorship-resistant AI inference on a decentralised GPU network',
   icons: {
     icon: '/favicon.svg',

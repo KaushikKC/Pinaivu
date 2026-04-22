@@ -83,7 +83,7 @@ export default function SettingsPage() {
           {/* Daemon */}
           <Section icon={<Cpu className="w-4 h-4" />} title="Local Daemon">
             <div className="space-y-3">
-              <Field label="Daemon URL" hint="Where deai-node is listening.">
+              <Field label="Daemon URL" hint="Where pinaivu is listening.">
                 <input
                   type="url"
                   value={daemonUrl}

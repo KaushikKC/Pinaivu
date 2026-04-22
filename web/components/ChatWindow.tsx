@@ -198,7 +198,7 @@ export function ChatWindow({ sessionId }: Props) {
               </div>
             </div>
             <div className="flex-1 min-w-0">
-              <div className="text-[11px] font-medium text-muted mb-1.5">DeAI</div>
+              <div className="text-[11px] font-medium text-muted mb-1.5">Pinaivu</div>
               {executingNode ? (
                 <div className="flex flex-col gap-1">
                   <div className="flex items-center gap-1.5 text-[10px] text-emerald-400">
@@ -281,8 +281,8 @@ export function ChatWindow({ sessionId }: Props) {
 
         {daemonDown && (
           <p className="text-xs text-red-400 mt-1.5 px-1">
-            Cannot reach <code>deai-node</code> daemon at localhost:4002.
-            Run <code className="text-accent">deai-node start --mode standalone</code>.
+            Cannot reach <code>pinaivu</code> daemon at localhost:4002.
+            Run <code className="text-accent">pinaivu start --mode standalone</code>.
           </p>
         )}
       </div>
@@ -304,7 +304,7 @@ function EmptyState({ model, daemonDown }: { model: string; daemonDown: boolean 
 
       <div>
         <h2 className="text-xl font-semibold text-white mb-1">
-          DeAI — Decentralised Intelligence
+          Pinaivu — Decentralised Intelligence
         </h2>
         <p className="text-muted text-sm max-w-sm">
           Your conversations are end-to-end encrypted. No company logs your prompts.
@@ -317,7 +317,7 @@ function EmptyState({ model, daemonDown }: { model: string; daemonDown: boolean 
           <div className="rounded-lg border border-red-800/40 bg-red-900/10 px-4 py-3 text-sm text-red-400">
             <span className="font-medium">Daemon offline.</span>
             {' '}Run:{' '}
-            <code className="font-mono text-xs">deai-node start --mode standalone</code>
+            <code className="font-mono text-xs">pinaivu start --mode standalone</code>
           </div>
         ) : (
           <>

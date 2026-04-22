@@ -1,10 +1,10 @@
-//! CLI definitions for `deai-node`.
+//! CLI definitions for `pinaivu`.
 //!
 //! ```
-//! deai-node init         — create default config at ~/.deai/config.toml
-//! deai-node start        — start the daemon (reads config file)
-//! deai-node status       — show node status (connects to running daemon)
-//! deai-node models       — list available models from Ollama
+//! pinaivu init         — create default config at ~/.pinaivu/config.toml
+//! pinaivu start        — start the daemon (reads config file)
+//! pinaivu status       — show node status (connects to running daemon)
+//! pinaivu models       — list available models from Ollama
 //! ```
 
 use std::path::PathBuf;
@@ -15,13 +15,13 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(
-    name    = "deai-node",
+    name    = "pinaivu",
     version = env!("CARGO_PKG_VERSION"),
-    about   = "DeAI — decentralised AI inference node",
+    about   = "Pinaivu — decentralised AI inference node",
     long_about = None,
 )]
 pub struct Cli {
-    /// Path to the config file (default: ~/.deai/config.toml).
+    /// Path to the config file (default: ~/.pinaivu/config.toml).
     #[arg(long, short = 'c', global = true)]
     pub config: Option<PathBuf>,
 
@@ -31,7 +31,7 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Initialise a new node — creates default config at ~/.deai/config.toml.
+    /// Initialise a new node — creates default config at ~/.pinaivu/config.toml.
     Init {
         /// Force overwrite if config already exists.
         #[arg(long)]
@@ -64,5 +64,5 @@ pub fn default_config_path() -> PathBuf {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".deai").join("config.toml")
+    PathBuf::from(home).join(".pinaivu").join("config.toml")
 }
