@@ -72,6 +72,9 @@ export function useStream(
           if (winner) {
             executingNode = winner;
             winnerApiUrl  = winner.api_url ?? undefined;
+            // Stamp nodeId on the placeholder message immediately so the UI
+            // shows which node is running before the first token arrives.
+            updateLastAssistantMessage(session.id, '', { nodeId: winner.node_peer_id });
             setState(prev => ({ ...prev, executingNode: winner }));
           }
         } catch {

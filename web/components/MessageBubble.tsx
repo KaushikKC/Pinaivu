@@ -183,8 +183,25 @@ export const MessageBubble = memo(function MessageBubble({ message, streaming }:
           <div className={clsx('prose-deai text-gray-200', streaming && !inThink && 'cursor-blink')}>
             {answer ? (
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown>
-            ) : inThink ? null : (
-              <span className="text-muted text-sm">Thinking…</span>
+            ) : inThink ? null : streaming ? (
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-1 h-1 bg-accent rounded-full animate-bounce [animation-delay:0ms]" />
+                  <span className="w-1 h-1 bg-accent rounded-full animate-bounce [animation-delay:150ms]" />
+                  <span className="w-1 h-1 bg-accent rounded-full animate-bounce [animation-delay:300ms]" />
+                </div>
+                {message.nodeId && (
+                  <div className="flex flex-col gap-0.5">
+                    <div className="flex items-center gap-1 text-[10px] text-violet-300">
+                      <Network className="w-3 h-3" />
+                      <span className="font-medium">Executing on network node</span>
+                    </div>
+                    <span className="font-mono text-[10px] text-muted">{message.nodeId.slice(-20)}</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <span className="text-muted text-sm">…</span>
             )}
           </div>
         )}
