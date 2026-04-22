@@ -224,23 +224,6 @@ export default function Home() {
       }
     })();
 
-    /* ═══════════ 6. MAGNETIC BUTTONS ═══════════ */
-    (function(){
-      const btns = document.querySelectorAll('.btn, .nav-cta');
-      btns.forEach(btn=>{
-        btn.addEventListener('mousemove', (e: Event)=>{
-          const me = e as MouseEvent;
-          const rect = (btn as HTMLElement).getBoundingClientRect();
-          const x = me.clientX - rect.left - rect.width/2;
-          const y = me.clientY - rect.top - rect.height/2;
-          (btn as HTMLElement).style.transform = `translate(${x*0.15}px, ${y*0.25}px)`;
-        });
-        btn.addEventListener('mouseleave', ()=>{
-          (btn as HTMLElement).style.transform = '';
-        });
-      });
-    })();
-
     /* ═══════════ 7. FLOW DIAGRAM LINES ═══════════ */
     (function(){
       function positionLines(){
@@ -360,28 +343,11 @@ export default function Home() {
       if(!btn) return;
       function apply(theme: string){
         document.documentElement.setAttribute('data-theme', theme);
-        try{ localStorage.setItem('pinaivu-theme', theme); }catch(e){}
+        try{ localStorage.setItem('pinaivu-theme', theme); }catch{}
       }
       btn.addEventListener('click', ()=>{
         const cur = document.documentElement.getAttribute('data-theme') || 'dark';
         apply(cur === 'dark' ? 'light' : 'dark');
-      });
-    })();
-
-    /* ═══════════ 13. MAGNETIC BUTTONS ═══════════ */
-    (function(){
-      const magnets = document.querySelectorAll('.btn, .nav-cta');
-      magnets.forEach(m=>{
-        m.addEventListener('mousemove', (e: Event)=>{
-          const me = e as MouseEvent;
-          const r = (m as HTMLElement).getBoundingClientRect();
-          const x = (me.clientX - r.left - r.width/2) * 0.3;
-          const y = (me.clientY - r.top - r.height/2) * 0.3;
-          (m as HTMLElement).style.transform = `translate(${x}px, ${y}px)`;
-        });
-        m.addEventListener('mouseleave', ()=>{
-          (m as HTMLElement).style.transform = '';
-        });
       });
     })();
 
@@ -452,10 +418,16 @@ export default function Home() {
       <div className="prog"><div className="prog-bar" id="progBar"></div></div>
 
       {/* NAV */}
-      <nav className="nav" id="nav">
-        <div className="nav-inner">
-          <a href="#top" className="nav-logo">
-            <span className="nav-logo-mark">
+      <nav
+        className="fixed left-0 right-0 top-0 z-100 flex justify-center px-(--content-pad) pt-4 transition-all duration-300"
+        id="nav"
+      >
+        <div className="pointer-events-auto flex w-full max-w-[1160px] items-center gap-4 rounded-full border border-(--line-2) bg-black/85 px-4 py-2 shadow-[0_10px_32px_rgba(0,0,0,.35)] backdrop-blur-xl">
+          <a
+            href="#top"
+            className="flex items-center gap-2 whitespace-nowrap font-mono text-[0.78rem] font-semibold uppercase tracking-[0.06em]"
+          >
+            <span className="grid h-[22px] w-[22px] place-items-center">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <circle cx="12" cy="12" r="10"/>
                 <circle cx="12" cy="12" r="5"/>
@@ -468,19 +440,22 @@ export default function Home() {
             </span>
             Pinaivu AI
           </a>
-          <ul className="nav-links">
-            <li><a href="#problem">Problem</a></li>
-            <li><a href="#features">Features</a></li>
-            <li><a href="#flow">Flow</a></li>
-            <li><a href="#models">Models</a></li>
-            <li><a href="#tech">Tech</a></li>
-            <li><a href="#roadmap">Roadmap</a></li>
+          <ul className="hidden flex-1 items-center justify-center gap-1 md:flex">
+            <li><a className="rounded-full px-3 py-2 font-mono text-[0.68rem] uppercase tracking-[0.08em] text-(--fg-3) transition-colors hover:bg-(--fg-5) hover:text-(--fg)" href="#problem">Problem</a></li>
+            <li><a className="rounded-full px-3 py-2 font-mono text-[0.68rem] uppercase tracking-[0.08em] text-(--fg-3) transition-colors hover:bg-(--fg-5) hover:text-(--fg)" href="#features">Features</a></li>
+            <li><a className="rounded-full px-3 py-2 font-mono text-[0.68rem] uppercase tracking-[0.08em] text-(--fg-3) transition-colors hover:bg-(--fg-5) hover:text-(--fg)" href="#flow">Flow</a></li>
+            <li><a className="rounded-full px-3 py-2 font-mono text-[0.68rem] uppercase tracking-[0.08em] text-(--fg-3) transition-colors hover:bg-(--fg-5) hover:text-(--fg)" href="#models">Models</a></li>
+            <li><a className="rounded-full px-3 py-2 font-mono text-[0.68rem] uppercase tracking-[0.08em] text-(--fg-3) transition-colors hover:bg-(--fg-5) hover:text-(--fg)" href="#tech">Tech</a></li>
+            <li><a className="rounded-full px-3 py-2 font-mono text-[0.68rem] uppercase tracking-[0.08em] text-(--fg-3) transition-colors hover:bg-(--fg-5) hover:text-(--fg)" href="#roadmap">Roadmap</a></li>
           </ul>
           <button className="theme-toggle" id="themeToggle" aria-label="Toggle theme">
             <svg className="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
             <svg className="moon" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
           </button>
-          <button className="nav-cta" onClick={() => setShowWaitlist(true)}>
+          <button
+            className="rounded-full bg-(--inv) px-5 py-2.5 font-mono text-[0.68rem] font-semibold uppercase tracking-widest text-(--inv-fg) transition-opacity hover:opacity-90"
+            onClick={() => setShowWaitlist(true)}
+          >
             <span>Join Waitlist <span className="arrow">↗</span></span>
           </button>
         </div>
@@ -500,53 +475,65 @@ export default function Home() {
         <div className="hero-marker tl"><span className="dot"></span> 0x<span id="heroHash">3f2a9b…c417</span></div>
         <div className="hero-marker tr">Ed25519 / Merkle / libp2p <span className="bar"></span></div>
         <div className="hero-marker bl">v2.0 · April 2026 · Living Document</div>
-        <div className="hero-content">
-          <div className="hero-center">
-            <div className="hero-tag"><span className="live"></span> Phase C · Protocol v2.0 · Zero blockchain required</div>
-            <div className="hero-kicker">A P2P Inference Protocol · 2026</div>
+        <div className="hero-content relative z-3 flex flex-1 flex-col justify-between pb-16 pt-24">
+          <div className="hero-center flex flex-1 flex-col items-center justify-center gap-6 px-(--content-pad) text-center">
+            <div className="hero-tag inline-flex items-center gap-2 rounded-full border border-(--line-2) bg-(--fg-6) px-3.5 py-1.5 font-mono text-[0.62rem] uppercase tracking-[0.25em] text-(--fg-2) backdrop-blur-sm"><span className="live"></span> Phase C · Protocol v2.0 · Zero blockchain required</div>
+            <div className="hero-kicker flex items-center gap-3 font-mono text-[0.6rem] uppercase tracking-[0.35em] text-(--fg-3)">A P2P Inference Protocol · 2026</div>
             <h1 className="hero-title">
               <span className="word"><span>Trust</span></span>
               <span className="word"><span>from</span></span>
               <span className="word"><span><em>cryptography,</em></span></span>
               <span className="word"><span>not chains.</span></span>
             </h1>
-            <p className="hero-sub">Pinaivu AI grounds every guarantee in <strong>Ed25519 signatures</strong> and <strong>SHA-256 Merkle proofs</strong> — not a coordinator, not a token. Settlement, storage and anchoring are <strong>pluggable</strong>. Swap a TOML value, not your stack.</p>
-            <div className="hero-ctas">
+            <p className="hero-sub max-w-[620px] text-[1.05rem] leading-[1.65] text-(--fg-2)">Pinaivu AI grounds every guarantee in <strong className="text-(--fg)">Ed25519 signatures</strong> and <strong className="text-(--fg)">SHA-256 Merkle proofs</strong> — not a coordinator, not a token. Settlement, storage and anchoring are <strong className="text-(--fg)">pluggable</strong>. Swap a TOML value, not your stack.</p>
+            <div className="hero-ctas mb-7 flex flex-wrap justify-center gap-2.5">
               <button className="btn btn-primary" onClick={() => setShowWaitlist(true)}><span>Join Waitlist</span> <span className="arrow">↗</span></button>
               <a className="btn btn-ghost" href="/PinaivuAI_Whitepaper.pdf" target="_blank" rel="noopener noreferrer"><span>Read Whitepaper v2.0</span></a>
             </div>
           </div>
-          <div className="hero-ticker">
-            <div className="track" id="ticker">
+          <div className="hero-ticker w-full border-y border-(--line) bg-(--fg-5) backdrop-blur-[10px]">
+            <div className="track h-full items-center" id="ticker">
               <span>ED25519 IDENTITY</span><span>SHA-256 MERKLE TREE</span><span>GOSSIPSUB REPUTATION</span><span>AES-256-GCM SESSIONS</span><span>X25519 CONTEXT KEYS</span><span>SIGNED PROOF OF INFERENCE</span><span>SETTLEMENT-AGNOSTIC ESCROW</span><span>LIBP2P · QUIC · NOISE</span><span>IPFS · WALRUS · LOCAL</span><span>FREE · RECEIPT · CHANNEL · SUI · EVM</span><span>STANDARD · PRIVATE · FRAGMENTED · MAXIMUM</span><span>OFFLINE VERIFIABLE</span>
             </div>
           </div>
         </div>
-        <div className="hero-scroll">Scroll<div className="line"></div>↓</div>
+        {/* <div className="hero-scroll">Scroll<div className="line"></div>↓</div> */}
       </section>
 
       {/* STATS */}
-      <section style={{padding:0}}>
-        <div className="grid stats" id="stats">
-          <div className="stat" style={{'--pct':'100%'} as React.CSSProperties}>
-            <div className="stat-val"><span data-count="5">0</span><span className="suf">/5</span></div>
-            <div className="stat-lbl">Guarantees met <span className="delta">G1–G5</span></div>
-            <div className="stat-bar"></div>
+      <section className="mt-8" style={{padding:0}}>
+        <div className="mx-auto grid max-w-(--content-max) grid-cols-1 gap-0 px-(--content-pad) md:grid-cols-2 xl:grid-cols-4" id="stats">
+          <div
+            className="stat group relative -ml-px -mt-px border border-(--line) px-8 py-10 transition-[background-color,border-color,box-shadow,transform] duration-300 hover:bg-(--bg-1) [&.in-view_.stat-bar]:w-(--pct,60%)"
+            style={{ '--pct': '100%' } as React.CSSProperties}
+          >
+            <div className="mb-4 flex items-baseline gap-1 font-display text-[clamp(2.4rem,4vw,3.4rem)] leading-none tracking-[-0.035em]"><span data-count="5">0</span><span className="font-mono text-[0.8rem] font-medium tracking-[0.02em] text-(--fg-2)">/5</span></div>
+            <div className="flex items-center justify-between font-mono text-[0.58rem] uppercase tracking-[0.25em] text-(--fg-3)">Guarantees met <span className="inline-flex items-center gap-1 font-semibold text-(--fg)">G1–G5</span></div>
+            <div className="stat-bar absolute bottom-0 left-0 h-[2px] w-0 bg-white transition-[width] duration-1600 ease-[cubic-bezier(.2,.8,.2,1)] delay-100"></div>
           </div>
-          <div className="stat" style={{'--pct':'100%'} as React.CSSProperties}>
-            <div className="stat-val"><span data-count="0">0</span></div>
-            <div className="stat-lbl">Blockchains required <span className="delta">Optional</span></div>
-            <div className="stat-bar"></div>
+          <div
+            className="stat group relative -ml-px -mt-px border border-(--line) px-8 py-10 transition-[background-color,border-color,box-shadow,transform] duration-300 hover:bg-(--bg-1) [&.in-view_.stat-bar]:w-(--pct,60%)"
+            style={{ '--pct': '100%' } as React.CSSProperties}
+          >
+            <div className="mb-4 flex items-baseline gap-1 font-display text-[clamp(2.4rem,4vw,3.4rem)] leading-none tracking-[-0.035em]"><span data-count="0">0</span></div>
+            <div className="flex items-center justify-between font-mono text-[0.58rem] uppercase tracking-[0.25em] text-(--fg-3)">Blockchains required <span className="inline-flex items-center gap-1 font-semibold text-(--fg)">Optional</span></div>
+            <div className="stat-bar absolute bottom-0 left-0 h-[2px] w-0 bg-white transition-[width] duration-1600 ease-[cubic-bezier(.2,.8,.2,1)] delay-100"></div>
           </div>
-          <div className="stat" style={{'--pct':'82%'} as React.CSSProperties}>
-            <div className="stat-val"><span data-count="6">0</span></div>
-            <div className="stat-lbl">Stack layers <span className="delta">Swappable</span></div>
-            <div className="stat-bar"></div>
+          <div
+            className="stat group relative -ml-px -mt-px border border-(--line) px-8 py-10 transition-[background-color,border-color,box-shadow,transform] duration-300 hover:bg-(--bg-1) [&.in-view_.stat-bar]:w-(--pct,60%)"
+            style={{ '--pct': '100%' } as React.CSSProperties}
+          >
+            <div className="mb-4 flex items-baseline gap-1 font-display text-[clamp(2.4rem,4vw,3.4rem)] leading-none tracking-[-0.035em]"><span data-count="6">0</span></div>
+            <div className="flex items-center justify-between font-mono text-[0.58rem] uppercase tracking-[0.25em] text-(--fg-3)">Stack layers <span className="inline-flex items-center gap-1 font-semibold text-(--fg)">Swappable</span></div>
+            <div className="stat-bar absolute bottom-0 left-0 h-[2px] w-0 bg-white transition-[width] duration-1600 ease-[cubic-bezier(.2,.8,.2,1)] delay-100"></div>
           </div>
-          <div className="stat" style={{'--pct':'96%'} as React.CSSProperties}>
-            <div className="stat-val"><span data-count="128">0</span><span className="suf">-bit</span></div>
-            <div className="stat-lbl">Ed25519 security <span className="delta">RFC 8032</span></div>
-            <div className="stat-bar"></div>
+          <div
+            className="stat group relative -ml-px -mt-px border border-(--line) px-8 py-10 transition-[background-color,border-color,box-shadow,transform] duration-300 hover:bg-(--bg-1) [&.in-view_.stat-bar]:w-(--pct,60%)"
+            style={{ '--pct': '100%' } as React.CSSProperties}
+          >
+            <div className="mb-4 flex items-baseline gap-1 font-display text-[clamp(2.4rem,4vw,3.4rem)] leading-none tracking-[-0.035em]"><span data-count="128">0</span><span className="font-mono text-[0.8rem] font-medium tracking-[0.02em] text-(--fg-2)">-bit</span></div>
+            <div className="flex items-center justify-between font-mono text-[0.58rem] uppercase tracking-[0.25em] text-(--fg-3)">Ed25519 security <span className="inline-flex items-center gap-1 font-semibold text-(--fg)">RFC 8032</span></div>
+            <div className="stat-bar absolute bottom-0 left-0 h-[2px] w-0 bg-white transition-[width] duration-1600 ease-[cubic-bezier(.2,.8,.2,1)] delay-100"></div>
           </div>
         </div>
       </section>
