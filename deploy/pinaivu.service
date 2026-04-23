@@ -1,0 +1,21 @@
+[Unit]
+Description=Pinaivu — Decentralised AI inference node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pinaivu
+Group=pinaivu
+ExecStart=/usr/local/bin/pinaivu start --config /etc/pinaivu/config.toml
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pinaivu
+
+# Resource limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

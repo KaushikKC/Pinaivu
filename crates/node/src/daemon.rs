@@ -149,7 +149,7 @@ impl DeAIDaemon {
                 // The blockchain team can swap in BlockchainPayment by replacing
                 // this Arc<dyn PaymentBackend> with their implementation.
                 // The daemon doesn't know the difference.
-                let ledger_path = expand_tilde("~/.deai/ledger.json");
+                let ledger_path = expand_tilde(&config.node.data_dir).join("ledger.json");
                 let ledger = LocalLedger::from_file(ledger_path)
                     .unwrap_or_else(|_| LocalLedger::in_memory());
                 info!("payment backend: local_ledger (blockchain payment available via trait swap)");
@@ -173,14 +173,14 @@ impl DeAIDaemon {
 
         let reputation: Arc<dyn ReputationStore> = match config.reputation.store {
             ReputationStoreKind::Local => {
-                let path = expand_tilde("~/.deai/reputation.json");
+                let path = expand_tilde(&config.node.data_dir).join("reputation.json");
                 let store = LocalReputationStore::from_file(peer_id_str.clone(), path)
                     .unwrap_or_else(|_| LocalReputationStore::in_memory(peer_id_str.clone()));
                 info!("reputation store: local");
                 Arc::new(store)
             }
             ReputationStoreKind::Gossip | ReputationStoreKind::Anchored => {
-                let path = expand_tilde("~/.deai/reputation.json");
+                let path = expand_tilde(&config.node.data_dir).join("reputation.json");
                 let inner = LocalReputationStore::from_file(peer_id_str.clone(), path)
                     .unwrap_or_else(|_| LocalReputationStore::in_memory(peer_id_str.clone()));
                 // Capacity 64: buffers recent roots if the P2P task is briefly slow.
@@ -367,7 +367,7 @@ impl DeAIDaemon {
         let engine_ref = Arc::clone(&engine);
 
         // ── Node identity keypair ─────────────────────────────────────────────
-        let identity_path = expand_tilde("~/.deai/node_identity.key");
+        let identity_path = expand_tilde(&config.node.data_dir).join("node_identity.key");
         let identity = NodeIdentity::load_or_generate(&identity_path)?;
 
         // ── Bid decision engine ───────────────────────────────────────────────
