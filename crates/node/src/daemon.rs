@@ -389,7 +389,7 @@ impl DeAIDaemon {
 
                 // Derive peer_id from the persisted keypair so we can build
                 // NodeCapabilities before starting the swarm.
-                let kp = p2p::load_or_create_keypair(&config.node.data_dir)?;
+                let kp = p2p::load_or_create_keypair(&expand_tilde(&config.node.data_dir).to_string_lossy())?;
                 let peer_id_raw = kp.public().to_peer_id().to_string();
 
                 let available: Vec<String> = engine.list_available_models().await.unwrap_or_default();

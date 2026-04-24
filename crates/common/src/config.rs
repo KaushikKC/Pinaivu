@@ -185,7 +185,7 @@ pub struct NetworkSection {
 impl Default for NetworkSection {
     fn default() -> Self {
         Self {
-            listen_port:    4001,
+            listen_port:    7771,
             bootstrap_nodes: vec![
                 "/ip4/13.48.204.156/tcp/4001/p2p/12D3KooWBoxCVGU2BpCYLqDN27AtyAtXJyY6MeCRssSARYL4NnU9".into(),
             ],

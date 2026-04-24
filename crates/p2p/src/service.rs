@@ -271,7 +271,8 @@ pub fn load_or_create_keypair(data_dir: &str) -> anyhow::Result<libp2p::identity
 }
 
 fn build_swarm(config: &NodeConfig) -> anyhow::Result<Swarm<PinaivuBehaviour>> {
-    let keypair = load_or_create_keypair(&config.node.data_dir)?;
+    let data_dir = expand_tilde(&config.node.data_dir);
+    let keypair = load_or_create_keypair(&data_dir.to_string_lossy())?;
     let swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
         .with_tcp(
@@ -720,4 +721,13 @@ async fn dispatch_gossipsub_message(
             debug!(%hash, "message on unknown topic");
         }
     }
+}
+
+fn expand_tilde(path: &str) -> PathBuf {
+    if let Some(stripped) = path.strip_prefix("~/") {
+        if let Some(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok() {
+            return PathBuf::from(home).join(stripped);
+        }
+    }
+    PathBuf::from(path)
 }
