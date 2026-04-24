@@ -253,7 +253,7 @@ pub struct HealthSection {
 impl Default for HealthSection {
     fn default() -> Self {
         Self {
-            metrics_port:       9090,
+            metrics_port:       7770,
             api_port:           4002,
             heartbeat_interval: "30s".into(),
             api_url:            None,
