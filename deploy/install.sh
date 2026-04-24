@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-REPO="your-org/pinaivu"
+REPO="KaushikKC/Pinaivu"
 INSTALL_DIR="/usr/local/bin"
 BINARY="pinaivu"
 
