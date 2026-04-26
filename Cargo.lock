@@ -2549,6 +2549,7 @@ dependencies = [
  "prometheus",
  "rand 0.8.5",
  "reputation",
+ "reqwest",
  "serde",
  "serde_json",
  "settlement",

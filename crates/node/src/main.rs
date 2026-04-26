@@ -21,9 +21,9 @@ use common::config::{NodeConfig, OperationMode};
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // ── init subcommand — does not need logging or config ───────────────────
+    // ── init subcommand — runs before logging/config setup ──────────────────
     if let Commands::Init { force } = &cli.command {
-        return cmd_init(*force, &cli);
+        return cmd_init(*force, &cli).await;
     }
 
     // ── Load config ──────────────────────────────────────────────────────────
@@ -75,22 +75,154 @@ async fn main() -> anyhow::Result<()> {
 // Subcommand handlers
 // ---------------------------------------------------------------------------
 
-fn cmd_init(force: bool, cli: &Cli) -> anyhow::Result<()> {
+async fn cmd_init(force: bool, cli: &Cli) -> anyhow::Result<()> {
+    use inference::ollama::OllamaClient;
+
     let path = cli.config.clone().unwrap_or_else(default_config_path);
 
     if path.exists() && !force {
-        eprintln!("Config already exists at {}. Use --force to overwrite.", path.display());
+        eprintln!(
+            "Config already exists at {}. Use --force to overwrite.",
+            path.display()
+        );
         std::process::exit(1);
     }
 
-    let config = NodeConfig::default();
+    println!("Initialising Pinaivu node...\n");
+
+    let mut config = NodeConfig::default();
+
+    // ── Step 1: Detect Ollama models ─────────────────────────────────────────
+    print!("  Checking Ollama... ");
+    let ollama = OllamaClient::default_local();
+    match ollama.list_models().await {
+        Ok(models) if !models.is_empty() => {
+            // Prefer smaller/faster models for default; full list is advertised anyway.
+            let preferred = ["gemma3:1b", "gemma3:4b", "llama3.2:1b", "llama3.1:8b", "deepseek-r1:7b"];
+            let best = preferred
+                .iter()
+                .find(|&&p| models.iter().any(|m| m.name == p))
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| models[0].name.clone());
+
+            println!("found {} model(s)", models.len());
+            for m in &models {
+                println!("    ✓ {}", m.name);
+            }
+            println!("  Default model set to: {}", best);
+            config.inference.default_model = best;
+        }
+        Ok(_) => {
+            println!("running but no models installed");
+            println!("  → Run: ollama pull gemma3:1b");
+            println!("    (keeping default model — install a model before starting)");
+        }
+        Err(_) => {
+            println!("not running");
+            println!("  → Install Ollama from https://ollama.com then run: ollama pull gemma3:1b");
+            println!("    (continuing with defaults — Ollama must be running before `pinaivu start`)");
+        }
+    }
+
+    // ── Step 2: Detect public IP ──────────────────────────────────────────────
+    print!("\n  Detecting public IP... ");
+    let public_ip = detect_public_ip().await;
+    match &public_ip {
+        Some(ip) => {
+            println!("{}", ip);
+            // ── Step 3: Test if API port is reachable ─────────────────────────
+            let api_port = config.health.api_port;
+            print!("  Testing port {} reachability... ", api_port);
+            if is_port_reachable(ip, api_port).await {
+                let api_url = format!("http://{}:{}", ip, api_port);
+                println!("open ✓");
+                println!("  api_url set to: {}", api_url);
+                config.health.api_url = Some(api_url);
+            } else {
+                println!("blocked (NAT/firewall)");
+                println!("  → Your node can still earn — other nodes will reach you via P2P relay.");
+                println!("    To enable direct connections: forward port {} on your router", api_port);
+                println!("    or run: ngrok http {} and add the URL to api_url in your config.", api_port);
+            }
+        }
+        None => {
+            println!("unavailable (offline?)");
+        }
+    }
+
+    // ── Step 4: Write config ──────────────────────────────────────────────────
+    println!("\n  Writing config to {}...", path.display());
     config.write_to_file(&path)?;
-    println!("Config written to {}", path.display());
-    println!("Edit it to configure your node, then run `pinaivu start`.");
+
+    println!("\n✓ Node ready!\n");
+    println!("  Start your node:   pinaivu start");
+    println!("  List models:       pinaivu models");
+    println!("  Node status:       pinaivu status");
+    println!();
+
     Ok(())
 }
 
-async fn cmd_start(config: NodeConfig) -> anyhow::Result<()> {
+async fn detect_public_ip() -> Option<String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+    // Try multiple services in order
+    for url in &["https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com"] {
+        if let Ok(resp) = client.get(*url).send().await {
+            if let Ok(text) = resp.text().await {
+                let ip = text.trim().to_string();
+                if !ip.is_empty() && ip.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                    return Some(ip);
+                }
+            }
+        }
+    }
+    None
+}
+
+async fn is_port_reachable(ip: &str, port: u16) -> bool {
+    // Ask an external checker to avoid false positives from self-connection
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .unwrap_or_default();
+    let url = format!("https://portchecker.io/api/v1/query?host={}&port={}", ip, port);
+    if let Ok(resp) = client.get(&url).send().await {
+        if let Ok(text) = resp.text().await {
+            return text.contains("\"status\":true") || text.contains("\"open\":true");
+        }
+    }
+    false
+}
+
+async fn cmd_start(mut config: NodeConfig) -> anyhow::Result<()> {
+    use inference::ollama::OllamaClient;
+
+    // Auto-detect best available model if configured model isn't in Ollama
+    let ollama = OllamaClient::default_local();
+    if let Ok(models) = ollama.list_models().await {
+        let names: Vec<String> = models.iter().map(|m| m.name.clone()).collect();
+        if !names.is_empty() {
+            if !names.contains(&config.inference.default_model) {
+                let preferred = ["gemma3:1b", "gemma3:4b", "llama3.2:1b", "llama3.1:8b", "deepseek-r1:7b"];
+                let best = preferred
+                    .iter()
+                    .find(|&&p| names.iter().any(|n| n == p))
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| names[0].clone());
+                info!(
+                    configured = %config.inference.default_model,
+                    selected   = %best,
+                    "configured model not found in Ollama — switching to available model"
+                );
+                config.inference.default_model = best;
+            }
+            info!(available_models = ?names, "Ollama models detected");
+        }
+    }
+
     info!(
         version = env!("CARGO_PKG_VERSION"),
         mode    = ?config.node.mode,
