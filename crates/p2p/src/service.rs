@@ -620,9 +620,11 @@ fn handle_command(
             response_topics.remove(&hash);
         }
 
-        SwarmCommand::PublishInferChunk { response_id, chunk, resp } => {
+        SwarmCommand::PublishInferChunk { response_id: _, chunk, resp } => {
             let result = (|| -> anyhow::Result<()> {
-                let topic   = topics::infer_response_topic(&response_id);
+                // Publish on inference/any — always has active mesh peers.
+                // response_id inside the chunk payload routes it to the right waiter.
+                let topic   = topics::inference_any_topic();
                 let payload = serde_json::to_vec(&chunk)?;
                 swarm.behaviour_mut().gossipsub.publish(topic, payload)?;
                 Ok(())
@@ -766,18 +768,17 @@ async fn dispatch_gossipsub_message(
 
     match topic {
         topics::KnownTopic::InferenceAny | topics::KnownTopic::InferenceModel(_) => {
-            // Try decoding as InferenceRequest first, then InferenceBid.
-            if let Ok(req) = serde_json::from_slice::<InferenceRequest>(&message.data) {
+            // Check for inference chunk first — most frequent during active sessions.
+            if let Ok(chunk) = serde_json::from_slice::<P2PInferenceChunk>(&message.data) {
+                let _ = event_tx.send(P2PEvent::InferenceChunkReceived {
+                    response_id: chunk.response_id.clone(),
+                    chunk,
+                }).await;
+            } else if let Ok(req) = serde_json::from_slice::<InferenceRequest>(&message.data) {
                 let _ = event_tx.send(P2PEvent::InferenceRequestReceived(req)).await;
             } else if let Ok(bid) = serde_json::from_slice::<InferenceBid>(&message.data) {
                 let _ = event_tx.send(P2PEvent::BidReceived(bid)).await;
             } else {
-                // Also check model-specific topic subscriptions
-                if model_topics.contains_key(&message.topic) {
-                    if let Ok(req) = serde_json::from_slice::<InferenceRequest>(&message.data) {
-                        let _ = event_tx.send(P2PEvent::InferenceRequestReceived(req)).await;
-                    }
-                }
                 debug!("unrecognised inference topic payload");
             }
         }

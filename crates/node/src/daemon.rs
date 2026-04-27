@@ -766,10 +766,11 @@ async fn execute_p2p_inference(
 
     let send_error = |svc: P2PService, response_topic: String, err: String| async move {
         let chunk = P2PInferenceChunk {
-            request_id: req.request_id,
-            token:      String::new(),
-            is_final:   true,
-            error:      Some(err),
+            request_id:  req.request_id,
+            response_id: response_topic.clone(),
+            token:       String::new(),
+            is_final:    true,
+            error:       Some(err),
         };
         let _ = svc.publish_infer_chunk(&response_topic, &chunk).await;
     };
@@ -790,10 +791,11 @@ async fn execute_p2p_inference(
         match result {
             Ok(chunk) => {
                 let p2p_chunk = P2PInferenceChunk {
-                    request_id: req.request_id,
-                    token:      chunk.token.clone(),
-                    is_final:   chunk.is_final,
-                    error:      None,
+                    request_id:  req.request_id,
+                    response_id: response_topic.clone(),
+                    token:       chunk.token.clone(),
+                    is_final:    chunk.is_final,
+                    error:       None,
                 };
                 if let Err(e) = svc.publish_infer_chunk(&response_topic, &p2p_chunk).await {
                     warn!(%e, "failed to publish inference chunk");
@@ -801,7 +803,7 @@ async fn execute_p2p_inference(
                 if chunk.is_final { break; }
             }
             Err(e) => {
-                error!(%e, "inference stream error");
+                error!(%e, "P2P inference stream error");
                 send_error(svc, response_topic, e.to_string()).await;
                 return;
             }

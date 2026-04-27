@@ -188,12 +188,14 @@ pub struct InferenceRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct P2PInferenceChunk {
-    pub request_id: RequestId,
-    pub token:      String,
-    pub is_final:   bool,
+    pub request_id:  RequestId,
+    /// Matches the UUID the client subscribed to — used to route chunks back.
+    pub response_id: String,
+    pub token:       String,
+    pub is_final:    bool,
     /// Set on error — token will be empty.
     #[serde(default)]
-    pub error:      Option<String>,
+    pub error:       Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
