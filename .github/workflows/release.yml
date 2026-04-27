@@ -74,6 +74,9 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Copy install script into artifacts
+        run: cp deploy/install.sh artifacts/install.sh
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
