@@ -5,9 +5,10 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        display: ["Fraunces", "serif"],
-        sans: ["Inter Tight", "sans-serif"],
+        fraunces: ["Fraunces", "serif"],
+        playfair: ["Playfair Display Italic", "serif"],
         mono: ["JetBrains Mono", "monospace"],
+        sans: ["Inter Tight", "sans-serif"],
       },
     },
   },

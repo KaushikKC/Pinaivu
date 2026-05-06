@@ -1,5 +1,12 @@
 import type { Metadata } from "next";
+import localFont from "next/font/local";
 import "./globals.css";
+
+const playfair = localFont({
+  src: "../public/fonts/PlayfairDisplay-Italic.ttf",
+  variable: "--font-playfair",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "Pinaivu AI — Cryptographic-Native Inference Protocol",
@@ -13,7 +20,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" data-theme="dark">
+    <html lang="en" data-theme="dark" className={playfair.variable}>
       <head>
         <script
           dangerouslySetInnerHTML={{
