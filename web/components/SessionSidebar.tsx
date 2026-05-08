@@ -9,6 +9,7 @@ import {
   Trash2,
   Settings,
   Network,
+  Trophy,
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
@@ -183,6 +184,17 @@ export function SessionSidebar({ collapsed, onCollapse }: Props) {
           >
             <Network className="w-3.5 h-3.5" />
             <span>Network</span>
+          </Link>
+          <Link
+            href="/leaderboard"
+            className={clsx(
+              'flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted',
+              'hover:bg-surface-2 hover:text-white transition-colors',
+              pathname === '/leaderboard' && 'bg-surface-2 text-white',
+            )}
+          >
+            <Trophy className="w-3.5 h-3.5" />
+            <span>Leaderboard</span>
           </Link>
           <Link
             href="/settings"
