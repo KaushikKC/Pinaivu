@@ -9,7 +9,7 @@ type Mode = 'standalone' | 'network' | 'network_paid';
 const MODE_DESCRIPTIONS: Record<Mode, string> = {
   standalone:    'Local daemon only. No P2P, no blockchain. Best for development.',
   network:       'P2P network with free inference. Conversations encrypted end-to-end.',
-  network_paid:  'Full decentralised network with Sui blockchain payments. Coming soon.',
+  network_paid:  'Full decentralised network with on-chain payments. Supports EVM chains and Solana. Coming soon.',
 };
 
 export default function SettingsPage() {
@@ -118,7 +118,7 @@ export default function SettingsPage() {
                 sessions are stored encrypted in your browser&apos;s local storage.
               </p>
               <p className="mt-2 text-xs">
-                Full Walrus decentralised storage + TEE node verification available in network mode.
+                Decentralised storage and TEE node verification available in network mode.
               </p>
             </div>
           </Section>
