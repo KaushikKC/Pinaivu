@@ -12,6 +12,7 @@ use async_trait::async_trait;
 
 use crate::adapter::{EscrowHandle, EscrowParams, SettlementAdapter, SettlementCapabilities};
 use common::types::{NanoX, ProofOfInference, RequestId};
+use serde_json::Value;
 
 pub struct FreeSettlement;
 
@@ -32,7 +33,17 @@ impl SettlementAdapter for FreeSettlement {
         }
     }
 
-    // lock_funds / release_funds / refund_funds all use the default no-op impls.
+    // Returns a no-op handle so settle_and_build_receipt can proceed to sign the proof.
+    async fn lock_funds(&self, params: &EscrowParams) -> anyhow::Result<EscrowHandle> {
+        Ok(EscrowHandle {
+            settlement_id: "free".into(),
+            request_id:    params.request_id,
+            amount_nanox:  0,
+            chain_tx_id:   None,
+            payload:       Value::Null,
+        })
+    }
+
     // get_balance returns u64::MAX (unlimited).
     // anchor_hash returns None (not supported).
 }
