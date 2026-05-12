@@ -618,8 +618,9 @@ async fn infer_via_p2p(state: ApiState, body: InferRequest, target_peer_id: Stri
     );
 
     // Collect chunks and stream them as NDJSON.
-    let timeout = Duration::from_secs(120);
+    let timeout  = Duration::from_secs(120);
     let deadline = Instant::now() + timeout;
+    let start_ms = Instant::now();
 
     let mut tokens: Vec<String> = Vec::new();
 
@@ -646,7 +647,25 @@ async fn infer_via_p2p(state: ApiState, body: InferRequest, target_peer_id: Stri
     state.response_collectors.lock().await.remove(&response_id);
     p2p.unsubscribe_response_topic(&response_id).await;
 
-    ndjson_response(ndjson_body(&tokens, None))
+    let latency_ms       = start_ms.elapsed().as_millis() as u32;
+    let full_output      = tokens.join("");
+    let input_tok_count  = (body.prompt.split_whitespace().count() as u32).max(1);
+    let output_tok_count = (tokens.len() as u32).max(1);
+
+    let receipt = settle_and_build_receipt(
+        &state,
+        body.accepted_settlements.as_deref(),
+        request_id,
+        &body.model_id,
+        input_tok_count,
+        output_tok_count,
+        latency_ms,
+        body.max_tokens.unwrap_or(1000) as u64,
+        body.prompt.as_bytes(),
+        full_output.as_bytes(),
+    ).await;
+
+    ndjson_response(ndjson_body(&tokens, receipt))
 }
 
 // ---------------------------------------------------------------------------
@@ -776,7 +795,7 @@ async fn settle_and_build_receipt(
     prompt_bytes:       &[u8],
     output_bytes:       &[u8],
 ) -> Option<ReceiptInfo> {
-    let default_wanted = vec!["receipt".to_string()];
+    let default_wanted = vec!["receipt".to_string(), "free".to_string()];
     let wanted = wanted.unwrap_or(&default_wanted);
     let wanted_strs: Vec<&str> = wanted.iter().map(String::as_str).collect();
 

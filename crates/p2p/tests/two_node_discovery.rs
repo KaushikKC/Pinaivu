@@ -9,15 +9,18 @@ use tracing::debug;
 
 use common::{
     config::NodeConfig,
-    types::{InferenceRequest, PrivacyLevel},
+    types::{GpuType, InferenceRequest, NodeCapabilities, PrivacyLevel, ReputationScore},
 };
 use p2p::{P2PEvent, build};
 use uuid::Uuid;
 
-/// Build a NodeConfig whose listen port is set to 0 (OS picks a free port).
-/// Bootstrap nodes are empty — the two nodes will connect directly.
+/// Build a NodeConfig with a unique temp data dir so each test node gets its
+/// own P2P keypair rather than both loading the same file-backed identity.
 fn test_config(port: u16) -> NodeConfig {
+    let tmp = std::env::temp_dir().join(format!("deai-test-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).expect("create temp data dir");
     let mut cfg = NodeConfig::default();
+    cfg.node.data_dir           = tmp.to_string_lossy().into_owned();
     cfg.network.listen_port    = port;
     cfg.network.bootstrap_nodes = vec![];
     cfg
@@ -39,6 +42,23 @@ fn dummy_inference_request() -> InferenceRequest {
         client_peer_id:       "peer_a".into(),
         privacy_level:        PrivacyLevel::Standard,
         accepted_settlements: vec!["free".into()],
+        target_peer_id:   None,
+        response_topic:   None,
+        prompt_plain:     None,
+    }
+}
+
+fn dummy_caps() -> NodeCapabilities {
+    NodeCapabilities {
+        peer_id:              "test-peer".into(),
+        models:               vec!["llama3.1:8b".into()],
+        gpu_vram_mb:          0,
+        gpu_type:             GpuType::Cpu,
+        region:               None,
+        tee_enabled:          false,
+        reputation:           ReputationScore::default(),
+        accepted_settlements: vec![],
+        api_url:              None,
     }
 }
 
@@ -50,8 +70,8 @@ async fn test_two_node_gossipsub() {
         .try_init();
 
     // Spin up two nodes on ephemeral ports.
-    let (svc_a, mut events_a) = build(&test_config(0)).await.expect("node A start");
-    let (svc_b, mut events_b) = build(&test_config(0)).await.expect("node B start");
+    let (svc_a, mut events_a) = build(&test_config(0), dummy_caps()).await.expect("node A start");
+    let (svc_b, mut events_b) = build(&test_config(0), dummy_caps()).await.expect("node B start");
 
     // Give the swarms a moment to bind their listen addresses.
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -72,8 +92,8 @@ async fn test_two_node_gossipsub() {
     // -----------------------------------------------------------------------
     // Re-create with fixed ports for deterministic connectivity.
     // -----------------------------------------------------------------------
-    let (svc_a, mut events_a) = build(&test_config(4100)).await.expect("node A");
-    let (svc_b, mut events_b) = build(&test_config(4101)).await.expect("node B");
+    let (svc_a, mut events_a) = build(&test_config(4100), dummy_caps()).await.expect("node A");
+    let (svc_b, mut events_b) = build(&test_config(4101), dummy_caps()).await.expect("node B");
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
