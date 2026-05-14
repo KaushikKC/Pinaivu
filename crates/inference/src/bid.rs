@@ -249,6 +249,9 @@ mod tests {
             client_peer_id:       "peer_client".into(),
             privacy_level:        privacy,
             accepted_settlements: vec!["free".into()],
+            target_peer_id:       None,
+            response_topic:       None,
+            prompt_plain:         None,
         }
     }
 

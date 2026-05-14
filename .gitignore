@@ -39,6 +39,9 @@ pnpm-debug.log*
 .env.*
 !.env.example
 
+# --- Accidental home-dir folder (created by running mkdir ~/.deai inside repo) ---
+~/
+
 # --- OS ---
 .DS_Store
 .AppleDouble
