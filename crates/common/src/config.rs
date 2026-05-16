@@ -230,6 +230,9 @@ pub struct NetworkSection {
     pub bootstrap_nodes: Vec<String>,
     pub max_peers:      usize,
     pub nat_traversal:  bool,
+    /// Seconds between periodic capability re-announce + bootstrap re-dial.
+    /// Keeps the node visible in the DHT after a network blip or sleep/wake cycle.
+    pub announce_heartbeat_secs: u64,
 }
 
 impl Default for NetworkSection {
@@ -241,6 +244,7 @@ impl Default for NetworkSection {
             ],
             max_peers:     50,
             nat_traversal: true,
+            announce_heartbeat_secs: 60,
         }
     }
 }
