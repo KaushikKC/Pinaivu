@@ -467,9 +467,21 @@ async fn swarm_task(
     announce_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     announce_interval.tick().await; // consume the immediate first tick
 
+    // 60-second heartbeat: re-announces capabilities, re-dials bootstrap nodes, and
+    // triggers a Kademlia bootstrap so the node recovers after a network blip or
+    // sleep/wake cycle without requiring a restart.
+    let heartbeat_secs = config.network.announce_heartbeat_secs.max(10);
+    let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(heartbeat_secs));
+    heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    heartbeat_interval.tick().await; // consume the immediate first tick
+
     // Delayed announce fires ~1s after a new peer connects, by which point gossipsub
     // GRAFT has run and the mesh is ready to relay the message.
     let mut delayed_announce: Option<tokio::time::Instant> = None;
+
+    // Track how many peers are currently connected so we can detect the 0→1
+    // transition (node recovering from full network isolation).
+    let mut connected_peer_count: usize = 0;
 
     loop {
         // Time until the next delayed announce fires (or a far future if not set).
@@ -486,6 +498,14 @@ async fn swarm_task(
                 publish_announce(&own_caps, &mut announce_seq, &mut swarm);
             }
 
+            // ---- 60-second reconnect heartbeat ----
+            _ = heartbeat_interval.tick() => {
+                publish_announce(&own_caps, &mut announce_seq, &mut swarm);
+                redial_bootstrap_nodes(&config, &mut swarm);
+                let _ = swarm.behaviour_mut().kademlia.bootstrap();
+                debug!("heartbeat: re-announced capabilities and triggered Kademlia bootstrap");
+            }
+
             // ---- delayed post-connection announce ----
             _ = delay_sleep => {
                 delayed_announce = None;
@@ -495,7 +515,7 @@ async fn swarm_task(
             // ---- swarm events ----
             event = swarm.next() => {
                 let Some(event) = event else { break };
-                handle_swarm_event(event, &event_tx, &mut model_topics, &mut response_topics, &mut swarm, &own_caps, &mut announce_seq, &mut delayed_announce).await;
+                handle_swarm_event(event, &event_tx, &mut model_topics, &mut response_topics, &mut swarm, &own_caps, &mut announce_seq, &mut delayed_announce, &mut connected_peer_count).await;
             }
 
             // ---- commands from the rest of the node ----
@@ -640,6 +660,32 @@ fn handle_command(
 }
 
 // ---------------------------------------------------------------------------
+// Reconnect helper
+// ---------------------------------------------------------------------------
+
+/// Re-dial all configured bootstrap nodes. Called on the heartbeat tick so the
+/// node reconnects automatically after a network blip or sleep/wake cycle.
+/// Dial errors are logged at debug level — they are expected when the peer is
+/// already connected.
+fn redial_bootstrap_nodes(
+    config: &NodeConfig,
+    swarm:  &mut Swarm<PinaivuBehaviour>,
+) {
+    for addr_str in &config.network.bootstrap_nodes {
+        match addr_str.parse::<Multiaddr>() {
+            Ok(addr) => {
+                if let Err(e) = swarm.dial(DialOpts::unknown_peer_id().address(addr.clone()).build()) {
+                    debug!(%addr, %e, "heartbeat: bootstrap re-dial skipped (already connected or in progress)");
+                } else {
+                    debug!(%addr, "heartbeat: re-dialling bootstrap node");
+                }
+            }
+            Err(e) => debug!(%addr_str, %e, "heartbeat: invalid bootstrap multiaddr"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Swarm event handler
 // ---------------------------------------------------------------------------
 
@@ -652,6 +698,7 @@ async fn handle_swarm_event(
     own_caps:             &NodeCapabilities,
     announce_seq:         &mut u64,
     delayed_announce_out: &mut Option<tokio::time::Instant>,
+    connected_peer_count: &mut usize,
 ) {
     match event {
         SwarmEvent::NewListenAddr { address, .. } => {
@@ -659,17 +706,31 @@ async fn handle_swarm_event(
         }
 
         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-            info!(%peer_id, "peer connected");
+            let was_isolated = *connected_peer_count == 0;
+            *connected_peer_count += 1;
+            info!(%peer_id, peers = *connected_peer_count, "peer connected");
             let _ = event_tx.send(P2PEvent::PeerConnected(peer_id)).await;
-            // Schedule a re-announce ~1s from now. By then gossipsub GRAFT will
-            // have run and the new peer will be in the mesh to receive it.
+            // On 0→1 transition the node just recovered from full isolation.
+            // Immediately re-announce and kick Kademlia so we rejoin the DHT.
+            if was_isolated {
+                info!("recovered from network isolation — re-announcing and bootstrapping Kademlia");
+                let _ = swarm.behaviour_mut().kademlia.bootstrap();
+                publish_announce(own_caps, announce_seq, swarm);
+            }
+            // Also schedule a delayed announce so the new peer's gossipsub GRAFT
+            // has time to complete before we send.
             *delayed_announce_out = Some(
                 tokio::time::Instant::now() + Duration::from_millis(1000)
             );
         }
 
         SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
-            debug!(%peer_id, ?cause, "peer disconnected");
+            *connected_peer_count = connected_peer_count.saturating_sub(1);
+            if *connected_peer_count == 0 {
+                warn!(%peer_id, "lost last peer — node is now isolated from the network");
+            } else {
+                debug!(%peer_id, ?cause, "peer disconnected");
+            }
             let _ = event_tx.send(P2PEvent::PeerDisconnected(peer_id)).await;
         }
 
