@@ -40,6 +40,30 @@ export default function NodesPage() {
           </div>
         )}
 
+        {health && health.settlements && health.settlements.length > 0 && (
+          <section className="mb-8">
+            <h2 className="text-sm font-medium text-muted mb-3">Settlement Adapters</h2>
+            <div className="flex flex-wrap gap-2">
+              {health.settlements.map(s => {
+                const isChain = s.startsWith('evm-') || s === 'sui' || s === 'solana';
+                return (
+                  <span
+                    key={s}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium
+                      ${isChain
+                        ? 'border-violet-700/40 bg-violet-900/20 text-violet-300'
+                        : 'border-surface-3 bg-surface-2 text-muted'
+                      }`}
+                  >
+                    {isChain && <span className="w-1.5 h-1.5 rounded-full bg-violet-400" />}
+                    {s}
+                  </span>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         {peers && peers.count > 0 ? (
           <section>
             <h2 className="text-sm font-medium text-muted mb-3">Connected Peers</h2>

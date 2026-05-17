@@ -3,9 +3,32 @@
 import { memo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { User, Bot, ChevronDown, ChevronRight, Lock, Server, Network, Clock, FileText, CheckCircle2, XCircle } from 'lucide-react';
+import { User, Bot, ChevronDown, ChevronRight, Lock, Server, Network, Clock, FileText, CheckCircle2, XCircle, ExternalLink } from 'lucide-react';
 import clsx from 'clsx';
 import type { Message, MessageReceipt } from '@/lib/session-store';
+
+function chainInfoFromSettlement(settlementId: string): { name: string; explorerBase?: string } {
+  if (settlementId === 'free')    return { name: 'Free (no payment)' };
+  if (settlementId === 'receipt') return { name: 'Signed Receipt' };
+  if (settlementId === 'channel') return { name: 'Payment Channel' };
+  if (settlementId === 'sui')     return { name: 'Sui Network' };
+  if (settlementId === 'solana')  return { name: 'Solana' };
+  if (settlementId.startsWith('evm-')) {
+    const chainId = settlementId.slice(4);
+    const chains: Record<string, { name: string; explorerBase: string }> = {
+      '1':       { name: 'Ethereum',        explorerBase: 'https://etherscan.io/tx/' },
+      '11155111':{ name: 'Eth Sepolia',     explorerBase: 'https://sepolia.etherscan.io/tx/' },
+      '8453':    { name: 'Base',            explorerBase: 'https://basescan.org/tx/' },
+      '84532':   { name: 'Base Sepolia',    explorerBase: 'https://sepolia.basescan.org/tx/' },
+      '42161':   { name: 'Arbitrum One',    explorerBase: 'https://arbiscan.io/tx/' },
+      '421614':  { name: 'Arbitrum Sepolia',explorerBase: 'https://sepolia.arbiscan.io/tx/' },
+      '137':     { name: 'Polygon',         explorerBase: 'https://polygonscan.com/tx/' },
+      '100':     { name: 'Gnosis Chain',    explorerBase: 'https://gnosisscan.io/tx/' },
+    };
+    return chains[chainId] ?? { name: `EVM chain ${chainId}` };
+  }
+  return { name: settlementId };
+}
 
 interface Props {
   message:    Message;
@@ -52,7 +75,28 @@ function ReceiptPanel({ receipt }: { receipt: MessageReceipt }) {
       {open && (
         <div className="mt-2 rounded-lg border border-surface-3 bg-surface-2 p-3 text-[11px] font-mono space-y-1.5">
           <Row label="Valid"       value={receipt.proofValid ? '✓ yes' : '✗ no'} accent={receipt.proofValid} />
-          <Row label="Settlement"  value={receipt.settlementId} />
+          {(() => {
+            const chain = chainInfoFromSettlement(receipt.settlementId);
+            return (
+              <div className="flex gap-2">
+                <span className="w-24 flex-shrink-0 text-muted">Settlement</span>
+                <span className="flex items-center gap-2 text-gray-300">
+                  <span>{chain.name}</span>
+                  {receipt.chainTxId && chain.explorerBase && (
+                    <a
+                      href={`${chain.explorerBase}${receipt.chainTxId}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-accent hover:underline text-[10px]"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      View on chain
+                    </a>
+                  )}
+                </span>
+              </div>
+            );
+          })()}
           <Row label="In tokens"   value={String(receipt.inputTokens)} />
           <Row label="Out tokens"  value={String(receipt.outputTokens)} />
           <Row label="Latency"     value={`${receipt.latencyMs} ms`} />
