@@ -108,6 +108,7 @@ export function useStream(
               nodePubkey:   chunk.node_pubkey,
               signature:    chunk.signature,
               canonicalHex: chunk.canonical_bytes_hex,
+              chainTxId:    chunk.chain_tx_id,
             };
           }
         }

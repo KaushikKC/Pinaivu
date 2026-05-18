@@ -12,9 +12,10 @@ const BASE = '/api/daemon';
 // ---------------------------------------------------------------------------
 
 export interface HealthResponse {
-  status:  string;
-  version: string;
-  mode:    string;
+  status:       string;
+  version:      string;
+  mode:         string;
+  settlements?: string[];
 }
 
 export interface PeersResponse {
@@ -46,6 +47,7 @@ export interface InferenceReceipt {
   node_pubkey:         string;
   signature:           string;
   canonical_bytes_hex: string;
+  chain_tx_id?:        string;
 }
 
 export interface TokenChunk {

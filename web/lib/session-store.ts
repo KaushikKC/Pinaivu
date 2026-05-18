@@ -21,6 +21,7 @@ export interface MessageReceipt {
   nodePubkey:    string;
   signature:     string;
   canonicalHex:  string;
+  chainTxId?:    string;
 }
 
 export interface Message {
