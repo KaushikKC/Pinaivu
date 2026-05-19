@@ -9,6 +9,7 @@ pub struct NodeConfig {
     pub inference:  InferenceSection,
     pub network:    NetworkSection,
     pub storage:    StorageSection,
+    pub context:    ContextSection,
     pub pricing:    PricingSection,
     pub wallet:     WalletSection,
     pub privacy:    PrivacySection,
@@ -16,6 +17,8 @@ pub struct NodeConfig {
     pub updates:    UpdatesSection,
     pub reputation: ReputationSection,
     pub settlement: SettlementSection,
+    pub x402:       X402Section,
+    pub api:        ApiSection,
 }
 
 impl Default for NodeConfig {
@@ -26,6 +29,7 @@ impl Default for NodeConfig {
             inference:  InferenceSection::default(),
             network:    NetworkSection::default(),
             storage:    StorageSection::default(),
+            context:    ContextSection::default(),
             pricing:    PricingSection::default(),
             wallet:     WalletSection::default(),
             privacy:    PrivacySection::default(),
@@ -33,6 +37,8 @@ impl Default for NodeConfig {
             updates:    UpdatesSection::default(),
             reputation: ReputationSection::default(),
             settlement: SettlementSection::default(),
+            x402:       X402Section::default(),
+            api:        ApiSection::default(),
         }
     }
 }
@@ -126,6 +132,50 @@ impl Default for StorageSection {
             ipfs_api:          "http://localhost:5001".into(),
             walrus_aggregator: "https://aggregator.walrus.site".into(),
             walrus_publisher:  "https://publisher.walrus.site".into(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Context store section
+// ---------------------------------------------------------------------------
+
+/// Which backend remembers conversation history on the node side.
+///
+/// This is the server-side context store used when a client passes `session_id`
+/// on `/v1/infer` requests. Separate from the user-facing blob storage.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextStoreKind {
+    /// In-process HashMap. Fast; lost on restart. Good for development.
+    #[default]
+    Memory,
+    /// JSON files in `data_dir/contexts/`. Survives restarts; no extra deps.
+    Local,
+    /// Redis with EXPIRE. Fast, persistent, TTL-based. Requires Redis.
+    Redis,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContextSection {
+    /// "memory" | "local" | "redis"
+    pub store:       ContextStoreKind,
+    /// Redis connection URL. Used when `store = "redis"`.
+    pub redis_url:   String,
+    /// How long (seconds) to keep a session in Redis before expiry.
+    pub ttl_seconds: u64,
+    /// Maximum messages to keep per session (oldest are dropped). 0 = unlimited.
+    pub max_messages: usize,
+}
+
+impl Default for ContextSection {
+    fn default() -> Self {
+        Self {
+            store:        ContextStoreKind::Memory,
+            redis_url:    "redis://127.0.0.1:6379".into(),
+            ttl_seconds:  86_400,   // 24 hours
+            max_messages: 100,      // ~50 conversation turns
         }
     }
 }
@@ -347,6 +397,80 @@ pub struct SettlementAdapterConfig {
     /// Used by the Solana adapter to derive the score PDA for anchor_hash.
     /// Matches NodeRegistration.node_pubkey / NodeScore.node_pubkey on-chain.
     pub node_pubkey_hex:  Option<String>,
+    /// Circle API key for the arc-gateway adapter (e.g. "TEST_API_KEY:…").
+    pub circle_api_key:   Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// x402 payment section
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// API authentication section
+// ---------------------------------------------------------------------------
+
+/// Configuration for the HTTP API authentication layer.
+///
+/// When `api_key` is set, every inference endpoint (`/v1/infer`,
+/// `/v1/chat/completions`, `/v1/infer_encrypted`) requires the caller to
+/// supply the key as either:
+///   - `Authorization: Bearer <api_key>` header, or
+///   - `X-API-Key: <api_key>` header.
+///
+/// Leave `api_key` empty (`""` or absent) to allow unauthenticated access
+/// (suitable for localhost-only or private-network deployments).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ApiSection {
+    /// Shared secret required on all inference endpoints.
+    /// Empty string → auth disabled.
+    pub api_key: String,
+}
+
+impl Default for ApiSection {
+    fn default() -> Self {
+        Self { api_key: String::new() }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// x402 payment section
+// ---------------------------------------------------------------------------
+
+/// Configuration for the x402 HTTP 402 payment protocol on /v1/infer.
+///
+/// When `enabled = true`, the node requires a valid X-Payment header on every
+/// /v1/infer request; unauthenticated requests get a 402 response with payment
+/// instructions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct X402Section {
+    /// Enable the x402 payment gate on /v1/infer.
+    pub enabled:          bool,
+    /// USDC contract address on Arc (or any other token).
+    pub usdc_address:     String,
+    /// Price in USDC 6-decimal units (1000 = $0.001).
+    pub price_units:      u64,
+    /// Chain network name: "arc-testnet" or "arc-mainnet".
+    pub network:          String,
+    /// Node's EVM address that receives payment.
+    pub node_evm_address: String,
+    /// EVM JSON-RPC endpoint used to verify payment transactions on-chain.
+    /// Required when `enabled = true`. Example: "https://rpc.arc-testnet.io".
+    pub rpc_url:          String,
+}
+
+impl Default for X402Section {
+    fn default() -> Self {
+        Self {
+            enabled:          false,
+            usdc_address:     String::new(),
+            price_units:      1000,
+            network:          "arc-testnet".into(),
+            node_evm_address: String::new(),
+            rpc_url:          String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
