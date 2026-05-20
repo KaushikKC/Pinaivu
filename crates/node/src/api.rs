@@ -13,6 +13,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use tokio::sync::Semaphore;
+
 use aes_gcm::{
     Aes256Gcm, Key, Nonce,
     aead::{Aead, KeyInit},
@@ -42,6 +44,7 @@ use settlement::{EscrowParams, SettlementAdapter, select_adapter};
 
 use crate::daemon::{BidCollectors, PeerRegistry, ResponseCollectors};
 use crate::identity::NodeIdentity;
+use context::store::{ContextStore, StoredMessage};
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -62,6 +65,49 @@ pub struct ApiState {
     pub response_collectors: ResponseCollectors,
     /// P2P service handle — `None` in standalone mode.
     pub p2p_service:    Option<P2PService>,
+    /// x402 payment gate configuration.
+    pub x402_config:    common::config::X402Section,
+    /// Server-side conversation context store (session_id → message history).
+    pub context_store:  Arc<dyn ContextStore>,
+    /// Shared secret for API key authentication. Empty → auth disabled.
+    pub api_key:        String,
+    /// Limits concurrent Ollama calls to prevent GPU OOM / starvation.
+    pub inference_sem:  Arc<Semaphore>,
+    /// Blob storage backend — writes inference outputs after completion.
+    pub storage:        Arc<dyn storage::StorageClient>,
+}
+
+// ---------------------------------------------------------------------------
+// API key authentication
+// ---------------------------------------------------------------------------
+
+/// Returns `Ok(())` when auth passes, `Err(Response)` with 401 when it fails.
+fn check_api_key(headers: &HeaderMap, api_key: &str) -> Result<(), Response> {
+    if api_key.is_empty() {
+        return Ok(()); // auth disabled
+    }
+
+    let provided = headers
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .or_else(|| {
+            headers
+                .get("X-API-Key")
+                .and_then(|v| v.to_str().ok())
+        });
+
+    match provided {
+        Some(key) if key == api_key => Ok(()),
+        _ => {
+            let body = serde_json::json!({
+                "error": { "message": "Unauthorized — valid API key required", "type": "auth_error" }
+            });
+            let mut headers = cors_headers();
+            headers.insert("WWW-Authenticate", "Bearer".parse().unwrap());
+            Err((StatusCode::UNAUTHORIZED, headers, Json(body)).into_response())
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +141,7 @@ struct ReceiptInfo {
     node_pubkey:         String,
     signature:           String,
     canonical_bytes_hex: String,
+    chain_tx_id:         Option<String>,
 }
 
 #[derive(Serialize)]
@@ -116,6 +163,7 @@ fn build_receipt(
     amount_nanox:       u64,
     prompt_bytes:       &[u8],
     output_bytes:       &[u8],
+    chain_tx_id:        Option<String>,
 ) -> (ProofOfInference, ReceiptInfo) {
     let input_hash:  [u8; 32] = Sha256::digest(prompt_bytes).into();
     let output_hash: [u8; 32] = Sha256::digest(output_bytes).into();
@@ -160,6 +208,7 @@ fn build_receipt(
         node_pubkey,
         signature,
         canonical_bytes_hex,
+        chain_tx_id,
     };
 
     (proof, receipt)
@@ -240,6 +289,9 @@ pub struct ChatCompletionRequest {
     pub temperature:          Option<f32>,
     /// DeAI extension: settlement adapters the client will accept.
     pub accepted_settlements: Option<Vec<String>>,
+    /// DeAI extension: opaque session ID for server-side context persistence.
+    /// When provided, the last user+assistant turn is saved to the context store.
+    pub session_id:           Option<String>,
 }
 
 // Non-streaming response
@@ -355,8 +407,11 @@ fn messages_to_context(messages: &[OaiChatMessage]) -> (ContextWindow, String) {
 
 async fn chat_completions_handler(
     State(state): State<ApiState>,
+    headers:      HeaderMap,
     Json(body):   Json<ChatCompletionRequest>,
 ) -> Response {
+    if let Err(r) = check_api_key(&headers, &state.api_key) { return r; }
+
     let request_id: RequestId = uuid::Uuid::new_v4();
     let chat_id  = format!("chatcmpl-{}", hex::encode(&request_id.as_bytes()[..8]));
     let created  = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
@@ -365,6 +420,19 @@ async fn chat_completions_handler(
     let temp     = body.temperature.unwrap_or(0.7);
 
     let (context_window, prompt) = messages_to_context(&body.messages);
+
+    // ── Concurrency gate ──────────────────────────────────────────────────────
+    let _permit = match state.inference_sem.try_acquire() {
+        Ok(p) => p,
+        Err(_) => {
+            let err = serde_json::json!({
+                "error": { "message": "node at capacity — retry shortly", "type": "capacity_error" }
+            });
+            let mut h = cors_headers();
+            h.insert("Retry-After", "5".parse().unwrap());
+            return (StatusCode::SERVICE_UNAVAILABLE, h, Json(err)).into_response();
+        }
+    };
 
     let (tokens, latency_ms) = match run_and_collect(
         state.engine.as_ref(),
@@ -390,6 +458,32 @@ async fn chat_completions_handler(
     let full_output = tokens.join("");
 
     debug!(%request_id, %model, input_toks, output_toks, latency_ms, "chat completion done");
+
+    // Persist this turn so SDK callers using session_id get continuity.
+    if let Some(ref sid) = body.session_id {
+        if let Err(e) = state.context_store.append(sid, &prompt, &full_output).await {
+            warn!(session_id = %sid, %e, "context: failed to save turn (non-fatal)");
+        }
+    }
+
+    // ── Write output to storage backend (best-effort, non-blocking) ───────────
+    {
+        let storage  = state.storage.clone();
+        let blob_req = serde_json::json!({
+            "request_id":  request_id.to_string(),
+            "model":       model,
+            "prompt_hash": hex::encode(sha2::Sha256::digest(prompt.as_bytes())),
+            "output":      full_output,
+            "timestamp":   created,
+        });
+        let blob_bytes = serde_json::to_vec(&blob_req).unwrap_or_default();
+        tokio::spawn(async move {
+            match storage.put(blob_bytes, 1).await {
+                Ok(id)  => debug!(blob_id = %id, "chat output stored"),
+                Err(e)  => warn!(%e, "storage write failed (non-fatal)"),
+            }
+        });
+    }
 
     // Settle + sign (best-effort, same as /v1/infer)
     settle_and_build_receipt(
@@ -481,6 +575,26 @@ async fn chat_completions_handler(
 // POST /v1/infer  — native plaintext
 // ---------------------------------------------------------------------------
 
+/// Convert stored message history into a `ContextWindow` for the inference engine.
+fn stored_messages_to_context_window(history: Vec<StoredMessage>) -> ContextWindow {
+    let mut cw = ContextWindow::default();
+    for msg in history {
+        let role = match msg.role.as_str() {
+            "assistant" => Role::Assistant,
+            "system"    => Role::System,
+            _           => Role::User,
+        };
+        cw.recent_messages.push(Message {
+            role,
+            content:     msg.content,
+            timestamp:   0,
+            node_id:     None,
+            token_count: 0,
+        });
+    }
+    cw
+}
+
 #[derive(Debug, Deserialize)]
 pub struct InferRequest {
     pub model_id:             String,
@@ -495,8 +609,23 @@ pub struct InferRequest {
 
 async fn infer_handler(
     State(state): State<ApiState>,
+    headers:      HeaderMap,
     Json(body):   Json<InferRequest>,
 ) -> Response {
+    // ── API key auth ──────────────────────────────────────────────────────────
+    if let Err(r) = check_api_key(&headers, &state.api_key) { return r; }
+
+    // ── x402 payment gate ─────────────────────────────────────────────────────
+    let x402_payer = match crate::x402::check_payment(&headers, &state.x402_config).await {
+        Err(response_402) => return response_402,
+        Ok(payer) => {
+            if !payer.is_empty() {
+                debug!(payer = %payer, "x402: valid payment received");
+            }
+            payer
+        }
+    };
+
     // ── P2P routing path ──────────────────────────────────────────────────────
     if let Some(peer_id) = body.peer_id.clone() {
         return infer_via_p2p(state, body, peer_id).await;
@@ -504,10 +633,40 @@ async fn infer_handler(
 
     let request_id: RequestId = uuid::Uuid::new_v4();
 
+    // ── Load conversation history from context store ───────────────────────────
+    // When session_id is present, replay all prior turns so the model has
+    // full conversation context even though only the new prompt is sent.
+    let context_window = if let Some(ref sid) = body.session_id {
+        match state.context_store.get_messages(sid).await {
+            Ok(history) if !history.is_empty() => {
+                debug!(session_id = %sid, turns = history.len(), "context: loaded from store");
+                stored_messages_to_context_window(history)
+            }
+            Ok(_)  => ContextWindow::default(),
+            Err(e) => {
+                warn!(session_id = %sid, %e, "context: load failed — using empty context");
+                ContextWindow::default()
+            }
+        }
+    } else {
+        ContextWindow::default()
+    };
+
+    // ── Concurrency gate — prevents GPU OOM under parallel requests ───────────
+    let _permit = match state.inference_sem.try_acquire() {
+        Ok(p) => p,
+        Err(_) => {
+            let err = serde_json::json!({"error": "node at capacity — retry shortly"});
+            let mut h = cors_headers();
+            h.insert("Retry-After", "5".parse().unwrap());
+            return (StatusCode::SERVICE_UNAVAILABLE, h, Json(err)).into_response();
+        }
+    };
+
     let (tokens, latency_ms) = match run_and_collect(
         state.engine.as_ref(),
         &body.model_id,
-        ContextWindow::default(),
+        context_window,
         &body.prompt,
         body.max_tokens.unwrap_or(2048),
         body.temperature.unwrap_or(0.7),
@@ -532,6 +691,33 @@ async fn infer_handler(
 
     let full_output = tokens.join("");
 
+    // ── Persist this turn so future requests have full context ────────────────
+    if let Some(ref sid) = body.session_id {
+        if let Err(e) = state.context_store.append(sid, &body.prompt, &full_output).await {
+            warn!(session_id = %sid, %e, "context: failed to save turn (non-fatal)");
+        }
+    }
+
+    // ── Write output to storage backend (best-effort, non-blocking) ───────────
+    {
+        let storage  = state.storage.clone();
+        let blob_req = serde_json::json!({
+            "request_id":  request_id.to_string(),
+            "model":       body.model_id,
+            "prompt_hash": hex::encode(sha2::Sha256::digest(body.prompt.as_bytes())),
+            "output":      full_output,
+            "timestamp":   SystemTime::now().duration_since(UNIX_EPOCH)
+                               .unwrap_or_default().as_secs(),
+        });
+        let blob_bytes = serde_json::to_vec(&blob_req).unwrap_or_default();
+        tokio::spawn(async move {
+            match storage.put(blob_bytes, 1).await {
+                Ok(id)  => debug!(blob_id = %id, "inference output stored"),
+                Err(e)  => warn!(%e, "storage write failed (non-fatal)"),
+            }
+        });
+    }
+
     let receipt = settle_and_build_receipt(
         &state,
         body.accepted_settlements.as_deref(),
@@ -545,7 +731,23 @@ async fn infer_handler(
         full_output.as_bytes(),
     ).await;
 
-    ndjson_response(ndjson_body(&tokens, receipt))
+    let mut response = ndjson_response(ndjson_body(&tokens, receipt));
+
+    // Attach X-Payment-Response header when x402 was active
+    if !x402_payer.is_empty() {
+        let payment_resp = serde_json::json!({
+            "success": true,
+            "payer": x402_payer,
+        });
+        if let Some(hval) = serde_json::to_string(&payment_resp)
+            .ok()
+            .and_then(|s| s.parse::<axum::http::HeaderValue>().ok())
+        {
+            response.headers_mut().insert("X-Payment-Response", hval);
+        }
+    }
+
+    response
 }
 
 // ---------------------------------------------------------------------------
@@ -678,6 +880,7 @@ pub struct InferEncryptedRequest {
     pub client_pubkey_x25519: String,
     pub prompt_encrypted:     String,
     pub prompt_nonce:         String,
+    #[allow(dead_code)]
     pub session_id:           Option<String>,
     pub max_tokens:           Option<u32>,
     pub temperature:          Option<f32>,
@@ -686,8 +889,11 @@ pub struct InferEncryptedRequest {
 
 async fn infer_encrypted_handler(
     State(state): State<ApiState>,
+    headers:      HeaderMap,
     Json(body):   Json<InferEncryptedRequest>,
 ) -> Response {
+    if let Err(r) = check_api_key(&headers, &state.api_key) { return r; }
+
     let client_pub_bytes = match hex::decode(&body.client_pubkey_x25519) {
         Ok(b) => b,
         Err(_) => return (StatusCode::BAD_REQUEST, cors_headers(),
@@ -832,6 +1038,7 @@ async fn settle_and_build_receipt(
         amount_nanox,
         prompt_bytes,
         output_bytes,
+        handle.chain_tx_id.clone(),
     );
 
     if let Err(e) = adapter.release_funds(&handle, &proof).await {
