@@ -5,8 +5,10 @@
 mod api;
 mod cli;
 mod daemon;
+mod erc8004;
 mod health;
 mod identity;
+mod x402;
 
 use clap::Parser as _;
 use tracing::info;
@@ -242,6 +244,7 @@ async fn cmd_start(mut config: NodeConfig) -> anyhow::Result<()> {
     health::start(config.health.metrics_port, health_state).await?;
 
     // Start inference API server (used by the TS SDK + web UI in standalone mode)
+    let concurrent_slots = config.gpu.concurrent_jobs.max(1);
     let api_state = api::ApiState {
         engine:              daemon.inference_engine(),
         settlements:         daemon.settlements().to_vec(),
@@ -252,6 +255,11 @@ async fn cmd_start(mut config: NodeConfig) -> anyhow::Result<()> {
         bid_collectors:      daemon.bid_collectors(),
         response_collectors: daemon.response_collectors(),
         p2p_service:         daemon.p2p_service_cloned(),
+        x402_config:         config.x402.clone(),
+        context_store:       daemon.context_store(),
+        api_key:             config.api.api_key.clone(),
+        inference_sem:       std::sync::Arc::new(tokio::sync::Semaphore::new(concurrent_slots)),
+        storage:             daemon.storage_client(),
     };
     api::start(config.health.api_port, api_state).await?;
 
@@ -267,7 +275,7 @@ async fn cmd_start(mut config: NodeConfig) -> anyhow::Result<()> {
     daemon.run().await
 }
 
-async fn cmd_models(config: &NodeConfig) -> anyhow::Result<()> {
+async fn cmd_models(_config: &NodeConfig) -> anyhow::Result<()> {
     use inference::ollama::OllamaClient;
     let client = OllamaClient::new("http://localhost:11434");
     match client.list_models().await {
