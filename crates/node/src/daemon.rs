@@ -17,11 +17,11 @@ use anyhow::Context as _;
 use tracing::{debug, error, info, warn};
 
 use common::{
-    config::{NodeConfig, OperationMode, ReputationStoreKind},
+    config::{ContextStoreKind, NodeConfig, OperationMode, ReputationStoreKind},
     payment::{FreePayment, LocalLedger, PaymentBackend},
     types::{
         ContextWindow, GpuType, InferenceBid, InferenceRequest, Message, NodeCapabilities,
-        P2PInferenceChunk, ReputationScore, Role,
+        P2PInferenceChunk, Role,
     },
 };
 
@@ -45,10 +45,12 @@ pub type ResponseCollectors =
 use crate::identity::NodeIdentity;
 use reputation::{GossipReputationStore, LocalReputationStore, ReputationStore};
 use settlement::{
-    ensure_free_fallback, ChannelChainConfig, EvmConfig, EvmSettlement, FreeSettlement,
+    ensure_free_fallback, ArcGatewayConfig, ArcGatewaySettlement,
+    ChannelChainConfig, EvmConfig, EvmSettlement, FreeSettlement,
     PaymentChannel, SettlementAdapter, SignedReceiptSettlement, SuiConfig, SuiSettlement,
 };
 use context::session::SessionManager;
+use context::store::{ContextStore, InMemoryContextStore, LocalFileContextStore};
 use inference::{
     bid::BidDecisionEngine,
     scheduler::NodeScheduler,
@@ -84,6 +86,7 @@ impl context::session::StorageClient for StorageAdapter {
 // DeAIDaemon
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 pub struct DeAIDaemon {
     config:      NodeConfig,
     storage:     Arc<dyn StorageClient>,
@@ -96,6 +99,8 @@ pub struct DeAIDaemon {
     engine:      Arc<dyn InferenceEngine>,
     scheduler:   Arc<NodeScheduler>,
     bid_engine:  Arc<BidDecisionEngine>,
+    /// Server-side conversation context store (session_id → message history).
+    context_store: Arc<dyn ContextStore>,
     /// Ed25519 identity keypair — signs every ProofOfInference.
     identity:    Arc<NodeIdentity>,
     /// Present in `network` and `network_paid` modes; `None` in `standalone`.
@@ -204,7 +209,7 @@ impl DeAIDaemon {
         // ── Settlement adapters ──────────────────────────────────────────────
         // Build adapters from config in preference order, then ensure "free" is
         // always available as the last-resort fallback.
-        let mut raw_settlements: Vec<Arc<dyn SettlementAdapter>> = config
+        let raw_settlements: Vec<Arc<dyn SettlementAdapter>> = config
             .settlement
             .adapters
             .iter()
@@ -212,6 +217,32 @@ impl DeAIDaemon {
                 match a.id.as_str() {
                     "free"    => Some(Arc::new(FreeSettlement)),
                     "receipt" => Some(Arc::new(SignedReceiptSettlement::new())),
+                    "arc-gateway" => {
+                        // Derive node_address from signer_key_hex if available;
+                        // otherwise use the raw value as a fallback.
+                        let node_address = a.signer_key_hex.as_deref()
+                            .and_then(|hex_str| {
+                                let bytes = hex::decode(hex_str).ok()?;
+                                let seed: [u8; 32] = bytes.try_into().ok()?;
+                                let (_, addr_str) = settlement::evm::eth_address(&seed).ok()?;
+                                Some(addr_str)
+                            })
+                            .unwrap_or_default();
+
+                        let cfg = ArcGatewayConfig {
+                            circle_api_key: a.circle_api_key.clone().unwrap_or_default(),
+                            usdc_address:   a.contract_address.clone().unwrap_or_default(),
+                            node_address,
+                            price_per_1k:   a.price_per_1k,
+                            arc_rpc_url:    a.rpc_url.clone()
+                                .unwrap_or_else(|| "https://rpc.testnet.arc.network".into()),
+                        };
+                        info!(
+                            node_address = %cfg.node_address,
+                            "arc-gateway settlement adapter loaded"
+                        );
+                        Some(Arc::new(ArcGatewaySettlement::new(cfg)) as Arc<dyn SettlementAdapter>)
+                    }
                     "channel" => {
                         // Phase F: if rpc_url + contract_address + signer_key_hex are
                         // present, wire up on-chain open/close.  Otherwise fall back to
@@ -409,14 +440,49 @@ impl DeAIDaemon {
         );
 
         // ── Session manager ──────────────────────────────────────────────────
-        // Uses LocalIndexStore in all modes by default (no blockchain needed).
-        // The blockchain team can inject a ChainIndexStore via
-        // SessionManager::new_with_blockchain() for full network_paid mode.
-        //
-        // StorageAdapter bridges storage::StorageClient ↔ context::session::StorageClient.
         let ctx_storage: Arc<dyn context::session::StorageClient> =
             Arc::new(StorageAdapter(Arc::clone(&storage)));
         let session_mgr = Arc::new(SessionManager::new_standalone(ctx_storage));
+
+        // ── Conversation context store ────────────────────────────────────────
+        // Lightweight session_id → message history store used by /v1/infer.
+        let context_store: Arc<dyn ContextStore> = match config.context.store {
+            ContextStoreKind::Local => {
+                let dir = expand_tilde(&config.node.data_dir).join("contexts");
+                info!(path = %dir.display(), "context store: local file");
+                match LocalFileContextStore::new(&dir, config.context.max_messages) {
+                    Ok(s)  => s as Arc<dyn ContextStore>,
+                    Err(e) => {
+                        warn!(%e, "local context store init failed — falling back to memory");
+                        InMemoryContextStore::new(config.context.max_messages) as Arc<dyn ContextStore>
+                    }
+                }
+            }
+            #[cfg(feature = "redis")]
+            ContextStoreKind::Redis => {
+                info!(url = %config.context.redis_url, "context store: redis");
+                match context::store::redis_store::RedisContextStore::new(
+                    &config.context.redis_url,
+                    config.context.ttl_seconds,
+                    config.context.max_messages,
+                ) {
+                    Ok(s)  => s,
+                    Err(e) => {
+                        warn!(%e, "redis context store init failed — falling back to memory");
+                        InMemoryContextStore::new(config.context.max_messages)
+                    }
+                }
+            }
+            #[cfg(not(feature = "redis"))]
+            ContextStoreKind::Redis => {
+                warn!("context store: redis requested but binary not compiled with --features redis — using memory");
+                InMemoryContextStore::new(config.context.max_messages)
+            }
+            _ => {
+                info!("context store: memory (in-process, not persisted)");
+                InMemoryContextStore::new(config.context.max_messages)
+            }
+        };
 
         // ── Inference engine + scheduler ─────────────────────────────────────
         let engine: Arc<dyn InferenceEngine> =
@@ -497,10 +563,30 @@ impl DeAIDaemon {
         let bid_collectors:      BidCollectors      = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let response_collectors: ResponseCollectors = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
+        // ── ERC-8004 registration ─────────────────────────────────────────────
+        // Best-effort: register this node on Arc chain if an Arc EVM adapter is
+        // configured.  Errors are logged and silently swallowed.
+        {
+            let node_pubkey   = identity.public_key_hex();
+            let api_url_owned = config.health.api_url.clone();
+            let models_snap: Vec<String> = engine.list_available_models().await.unwrap_or_default();
+            let adapters_snap = config.settlement.adapters.clone();
+
+            tokio::spawn(async move {
+                crate::erc8004::try_register(
+                    &adapters_snap,
+                    &node_pubkey,
+                    api_url_owned.as_deref(),
+                    &models_snap,
+                ).await;
+            });
+        }
+
         Ok(Self {
             config,
             storage,
             session_mgr,
+            context_store,
             payment,
             reputation,
             settlements,
@@ -554,6 +640,16 @@ impl DeAIDaemon {
     /// Returns a cloned `P2PService` handle for use in the HTTP API server.
     pub fn p2p_service_cloned(&self) -> Option<P2PService> {
         self.p2p.as_ref().map(|(svc, _)| svc.clone())
+    }
+
+    /// Returns the conversation context store for use in the API server.
+    pub fn context_store(&self) -> Arc<dyn ContextStore> {
+        Arc::clone(&self.context_store)
+    }
+
+    /// Returns the blob storage client for use in the API server.
+    pub fn storage_client(&self) -> Arc<dyn storage::StorageClient> {
+        Arc::clone(&self.storage)
     }
 
     // ── Main run loop ─────────────────────────────────────────────────────────
@@ -637,7 +733,7 @@ async fn event_loop(
     bid_collectors:      BidCollectors,
     response_collectors: ResponseCollectors,
     engine:              Arc<dyn InferenceEngine>,
-    own_caps:            NodeCapabilities,
+    _own_caps:           NodeCapabilities,
 ) {
     while let Some(event) = events.recv().await {
         match event {
@@ -824,7 +920,7 @@ fn handle_inference_request(
     req:        InferenceRequest,
     svc:        P2PService,
     bid_engine: Arc<BidDecisionEngine>,
-    scheduler:  Arc<NodeScheduler>,
+    _scheduler: Arc<NodeScheduler>,
     _payment:   Arc<dyn PaymentBackend>,
 ) {
     tokio::spawn(async move {
