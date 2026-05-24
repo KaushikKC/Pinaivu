@@ -3,6 +3,9 @@ name = "context"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+redis = ["dep:redis"]
+
 [dependencies]
 common           = { path = "../common" }
 blockchain-iface = { path = "../blockchain-iface" }
@@ -20,3 +23,7 @@ x25519-dalek     = { workspace = true }
 rand             = { workspace = true }
 sha2             = { workspace = true }
 zeroize          = "1"
+redis            = { version = "0.26", features = ["tokio-comp", "connection-manager"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
