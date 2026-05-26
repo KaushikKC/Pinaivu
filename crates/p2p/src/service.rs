@@ -94,6 +94,7 @@ enum SwarmCommand {
         response_id: String,
     },
     PublishInferChunk {
+        #[allow(dead_code)]
         response_id: String,
         chunk:       P2PInferenceChunk,
         resp:        oneshot::Sender<anyhow::Result<()>>,
@@ -749,7 +750,7 @@ async fn handle_swarm_event(
 async fn dispatch_gossipsub_message(
     message:         gossipsub::Message,
     event_tx:        &mpsc::Sender<P2PEvent>,
-    model_topics:    &HashMap<libp2p::gossipsub::TopicHash, String>,
+    _model_topics:   &HashMap<libp2p::gossipsub::TopicHash, String>,
     response_topics: &HashMap<libp2p::gossipsub::TopicHash, String>,
 ) {
     // Check response topics first — they are dynamic and not in KnownTopic static list.
