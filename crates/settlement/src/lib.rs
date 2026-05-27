@@ -17,6 +17,7 @@
 //! add or remove a settlement method.
 
 pub mod adapter;
+pub mod arc_gateway;
 pub mod channel;
 pub mod evm;
 pub mod free;
@@ -29,6 +30,7 @@ pub use adapter::{
     compatible_bids, ensure_free_fallback, select_adapter,
     EscrowHandle, EscrowParams, SettlementAdapter, SettlementCapabilities,
 };
+pub use arc_gateway::{ArcGatewayConfig, ArcGatewaySettlement};
 pub use channel::{ChannelChainConfig, PaymentChannel};
 pub use evm::{EvmConfig, EvmSettlement};
 pub use free::FreeSettlement;

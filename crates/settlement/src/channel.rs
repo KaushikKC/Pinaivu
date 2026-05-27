@@ -261,6 +261,7 @@ fn channel_id_from_uuid(id: &Uuid) -> [u8; 32] {
 // Channel state
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ChannelState {
     request_id:     RequestId,

@@ -14,7 +14,7 @@
 //! | `EvmSettlement`          | Yes (any EVM) | Yes        | Solidity contracts.                |
 
 use async_trait::async_trait;
-use common::types::{NanoX, NodePeerId, ProofOfInference, RequestId};
+use common::types::{NanoX, ProofOfInference, RequestId};
 
 // ---------------------------------------------------------------------------
 // Supporting types

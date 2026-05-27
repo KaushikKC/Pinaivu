@@ -11,7 +11,6 @@
 use async_trait::async_trait;
 
 use crate::adapter::{EscrowHandle, EscrowParams, SettlementAdapter, SettlementCapabilities};
-use common::types::{NanoX, ProofOfInference, RequestId};
 use serde_json::Value;
 
 pub struct FreeSettlement;

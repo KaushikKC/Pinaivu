@@ -49,8 +49,9 @@ pub struct SignedReceiptSettlement {
     receipts: Arc<Mutex<Vec<ReceiptRecord>>>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
-struct ReceiptRecord {
+pub(crate) struct ReceiptRecord {
     request_id:   String,
     amount_nanox: NanoX,
     timestamp:    u64,
@@ -65,7 +66,8 @@ impl SignedReceiptSettlement {
     }
 
     /// Return a snapshot of all recorded receipts (for auditing).
-    pub async fn all_receipts(&self) -> Vec<ReceiptRecord> {
+    #[allow(dead_code)]
+    pub(crate) async fn all_receipts(&self) -> Vec<ReceiptRecord> {
         self.receipts.lock().await.clone()
     }
 }

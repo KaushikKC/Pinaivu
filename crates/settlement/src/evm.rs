@@ -47,7 +47,7 @@
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use common::types::{NanoX, ProofOfInference};
-use k256::ecdsa::{signature::hazmat::PrehashSigner, RecoveryId, Signature, SigningKey};
+use k256::ecdsa::{RecoveryId, Signature, SigningKey};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha3::{Digest, Keccak256};
@@ -196,7 +196,7 @@ pub(crate) fn abi_call(selector: [u8; 4], args: &[[u8; 32]]) -> Vec<u8> {
 /// Derive an Ethereum address from a secp256k1 private key seed.
 ///
 /// Address = keccak256(uncompressed_pubkey[1..])[12..32], hex with `0x` prefix.
-pub(crate) fn eth_address(seed: &[u8; 32]) -> anyhow::Result<([u8; 20], String)> {
+pub fn eth_address(seed: &[u8; 32]) -> anyhow::Result<([u8; 20], String)> {
     let sk = SigningKey::from_bytes(seed.into())
         .context("EvmSettlement: invalid secp256k1 private key")?;
 
@@ -498,6 +498,166 @@ impl EvmSettlement {
         self.send_tx(&calldata, 0).await
     }
 
+    // ── Generic transaction dispatch ──────────────────────────────────────────
+
+    /// Build, sign, and broadcast an EIP-1559 transaction to an arbitrary `to` address.
+    ///
+    /// Unlike `send_tx` (which always sends to `self.config.contract_address`),
+    /// this method accepts any target address.  Used by ERC-8004 registration.
+    pub async fn send_transaction(&self, to: &str, data: Vec<u8>, value: u64) -> anyhow::Result<String> {
+        let seed = self.seed()?;
+        let (_, from_str) = eth_address(&seed)?;
+        let to_bytes = parse_addr(to).context("send_transaction: invalid 'to' address")?;
+
+        let nonce               = self.get_nonce(&from_str).await?;
+        let (max_prio, max_fee) = self.fee_params().await?;
+
+        // Gas estimation: best-effort, fall back to a generous fixed limit.
+        let gas = self.estimate_gas_to(&from_str, to, &data, value).await.unwrap_or(300_000);
+
+        debug!(
+            chain = self.config.chain_id,
+            to,
+            nonce, gas, max_fee,
+            "EvmSettlement::send_transaction"
+        );
+
+        let raw = sign_eip1559(
+            self.config.chain_id,
+            nonce,
+            max_prio,
+            max_fee,
+            gas,
+            &to_bytes,
+            value,
+            &data,
+            &seed,
+        )?;
+
+        let v = self
+            .rpc(
+                "eth_sendRawTransaction",
+                serde_json::json!([format!("0x{}", hex::encode(&raw))]),
+            )
+            .await
+            .context("send_transaction: eth_sendRawTransaction failed")?;
+
+        let tx_hash = v
+            .as_str()
+            .ok_or_else(|| anyhow!("eth_sendRawTransaction: non-string result"))?
+            .to_string();
+
+        info!(tx_hash, chain = self.config.chain_id, to, "EVM tx submitted");
+        Ok(tx_hash)
+    }
+
+    /// `eth_estimateGas` targeting an arbitrary `to` address (not necessarily the escrow contract).
+    async fn estimate_gas_to(&self, from: &str, to: &str, calldata: &[u8], value: u64) -> anyhow::Result<u64> {
+        let v = self
+            .rpc(
+                "eth_estimateGas",
+                serde_json::json!([{
+                    "from":  from,
+                    "to":    to,
+                    "data":  format!("0x{}", hex::encode(calldata)),
+                    "value": format!("0x{value:x}"),
+                }]),
+            )
+            .await?;
+        let gas = parse_hex_u64(v.as_str().ok_or_else(|| anyhow!("gas estimate not a string"))?)?;
+        Ok(gas + gas / 5)
+    }
+
+    // ── ERC-8004 AI Agent Registry ─────────────────────────────────────────────
+
+    /// Register this node as an ERC-8004 AI agent on Arc chain.
+    ///
+    /// No-op if the adapter is not configured for Arc (chain_id must be 5042002 or 1243).
+    /// Returns the transaction hash, or `None` if not on Arc.
+    pub async fn register_erc8004_agent(
+        &self,
+        node_pubkey: &str,
+        api_url:     Option<&str>,
+        models:      &[String],
+    ) -> anyhow::Result<Option<String>> {
+        const ARC_TESTNET: u64 = 5042002;
+        const ARC_MAINNET: u64 = 1243;
+
+        if self.config.chain_id != ARC_TESTNET && self.config.chain_id != ARC_MAINNET {
+            return Ok(None);
+        }
+
+        let registry   = "0x8004A818BFB912233c491871b3d84c89A494BD9e";
+        let seed       = self.seed()?;
+        let (_, agent_addr) = eth_address(&seed)?;
+
+        let metadata_uri = format!(
+            r#"data:application/json,{{"name":"Pinaivu Node","pubkey":"{}","apiUrl":"{}","models":{}}}"#,
+            node_pubkey,
+            api_url.unwrap_or(""),
+            serde_json::to_string(models).unwrap_or_else(|_| "[]".into()),
+        );
+
+        let calldata = encode_register_call(&agent_addr, &metadata_uri);
+
+        match self.send_transaction(registry, calldata, 0).await {
+            Ok(tx_hash) => {
+                info!(
+                    tx_hash  = %tx_hash,
+                    registry = registry,
+                    "ERC-8004: agent registered on Arc"
+                );
+                Ok(Some(tx_hash))
+            }
+            Err(e) => {
+                // Already registered or RPC error → non-fatal
+                tracing::info!(
+                    error    = %e,
+                    registry = registry,
+                    "ERC-8004: register_erc8004_agent failed (may already be registered)"
+                );
+                Ok(None)
+            }
+        }
+    }
+
+    /// Update this node's on-chain reputation score (ERC-8004 ReputationRegistry).
+    ///
+    /// No-op if not on Arc.  Returns the transaction hash, or `None`.
+    pub async fn update_erc8004_reputation(&self, score_bps: u64) -> anyhow::Result<Option<String>> {
+        const ARC_TESTNET: u64 = 5042002;
+        const ARC_MAINNET: u64 = 1243;
+
+        if self.config.chain_id != ARC_TESTNET && self.config.chain_id != ARC_MAINNET {
+            return Ok(None);
+        }
+
+        let registry        = "0x8004B663056A597Dffe9eCcC1965A193B7388713";
+        let seed            = self.seed()?;
+        let (_, agent_addr) = eth_address(&seed)?;
+
+        let calldata = encode_update_reputation_call(&agent_addr, score_bps);
+
+        match self.send_transaction(registry, calldata, 0).await {
+            Ok(tx_hash) => {
+                info!(
+                    tx_hash   = %tx_hash,
+                    score_bps,
+                    "ERC-8004: reputation updated on Arc"
+                );
+                Ok(Some(tx_hash))
+            }
+            Err(e) => {
+                tracing::info!(
+                    error     = %e,
+                    score_bps,
+                    "ERC-8004: update_erc8004_reputation failed"
+                );
+                Ok(None)
+            }
+        }
+    }
+
     // ── Escrow ID encoding ────────────────────────────────────────────────────
 
     /// Map a tx hash to a u64 escrow ID (first 8 bytes of the hash).
@@ -664,6 +824,58 @@ impl SettlementAdapter for EvmSettlement {
         );
         Ok(Some(tx_hash))
     }
+}
+
+// ---------------------------------------------------------------------------
+// ERC-8004 ABI encoding helpers
+// ---------------------------------------------------------------------------
+
+/// ABI-encode a `register(address,string)` call.
+///
+/// EVM ABI layout (dynamic string):
+/// ```text
+/// [0..4]    selector
+/// [4..36]   address (32 bytes, left-padded)
+/// [36..68]  offset of string data = 0x40 (64)
+/// [68..100] string length
+/// [100..]   string bytes (padded to 32-byte boundary)
+/// ```
+pub(crate) fn encode_register_call(agent_addr: &str, uri: &str) -> Vec<u8> {
+    let selector = abi_selector("register(address,string)");
+
+    let addr_bytes = parse_addr(agent_addr).unwrap_or([0u8; 20]);
+    let addr_word  = abi_address(&addr_bytes);
+
+    // Offset of the string argument (64 = 0x40): after the two head words
+    let offset_word = abi_uint256(64);
+
+    let uri_bytes = uri.as_bytes();
+    let len_word  = abi_uint256(uri_bytes.len() as u64);
+
+    // Pad uri_bytes to next 32-byte boundary
+    let padded_len = ((uri_bytes.len() + 31) / 32) * 32;
+    let mut padded_data = vec![0u8; padded_len];
+    padded_data[..uri_bytes.len()].copy_from_slice(uri_bytes);
+
+    let mut out = selector.to_vec();
+    out.extend_from_slice(&addr_word);
+    out.extend_from_slice(&offset_word);
+    out.extend_from_slice(&len_word);
+    out.extend_from_slice(&padded_data);
+    out
+}
+
+/// ABI-encode an `updateReputation(address,uint256)` call.
+pub(crate) fn encode_update_reputation_call(agent_addr: &str, score: u64) -> Vec<u8> {
+    let selector   = abi_selector("updateReputation(address,uint256)");
+    let addr_bytes = parse_addr(agent_addr).unwrap_or([0u8; 20]);
+    let addr_word  = abi_address(&addr_bytes);
+    let score_word = abi_uint256(score);
+
+    let mut out = selector.to_vec();
+    out.extend_from_slice(&addr_word);
+    out.extend_from_slice(&score_word);
+    out
 }
 
 // ---------------------------------------------------------------------------
