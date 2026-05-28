@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { AppShell } from '@/components/AppShell';
 import { Settings, Shield, Cpu, Network, Trash2 } from 'lucide-react';
 
@@ -12,11 +12,30 @@ const MODE_DESCRIPTIONS: Record<Mode, string> = {
   network_paid:  'Full decentralised network with on-chain payments. Supports EVM chains and Solana. Coming soon.',
 };
 
+function loadSavedSettings() {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem('deai:settings');
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
 export default function SettingsPage() {
   const [mode,       setMode]       = useState<Mode>('standalone');
   const [daemonUrl,  setDaemonUrl]  = useState('http://localhost:4002');
-  const [bidWindow,  setBidWindow]  = useState('500');
+  const [bidWindow,  setBidWindow]  = useState('2000');
   const [saved,      setSaved]      = useState(false);
+
+  // Populate fields from localStorage on first render
+  useEffect(() => {
+    const s = loadSavedSettings();
+    if (!s) return;
+    if (s.mode && ['standalone', 'network', 'network_paid'].includes(s.mode)) {
+      setMode(s.mode as Mode);
+    }
+    if (s.daemonUrl) setDaemonUrl(s.daemonUrl);
+    if (s.bidWindowMs) setBidWindow(String(s.bidWindowMs));
+  }, []);
 
   function handleSave(e: React.FormEvent) {
     e.preventDefault();
