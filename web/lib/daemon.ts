@@ -1,11 +1,52 @@
 /**
  * daemon.ts — Browser-compatible HTTP client for the deai-node daemon.
  *
- * All requests go through the Next.js rewrite proxy (/api/daemon → localhost:4002)
- * to avoid CORS issues in the browser.
+ * Default: requests go through the Next.js rewrite proxy (/api/daemon → localhost:4002).
+ * When the user sets a custom daemon URL in Settings, we hit it directly — the daemon
+ * returns Access-Control-Allow-Origin: * so CORS is not an issue for localhost variants.
  */
 
-const BASE = '/api/daemon';
+const DEFAULT_DAEMON_URL = 'http://localhost:4002';
+const PROXY_BASE = '/api/daemon';
+
+// ---------------------------------------------------------------------------
+// Settings helpers
+// ---------------------------------------------------------------------------
+
+interface DeAISettings {
+  mode:        string;
+  daemonUrl:   string;
+  bidWindowMs: number;
+}
+
+function getSettings(): DeAISettings {
+  if (typeof window === 'undefined') {
+    return { mode: 'standalone', daemonUrl: DEFAULT_DAEMON_URL, bidWindowMs: 2000 };
+  }
+  try {
+    const raw = localStorage.getItem('deai:settings');
+    if (!raw) return { mode: 'standalone', daemonUrl: DEFAULT_DAEMON_URL, bidWindowMs: 2000 };
+    const parsed = JSON.parse(raw) as Partial<DeAISettings>;
+    return {
+      mode:        parsed.mode        ?? 'standalone',
+      daemonUrl:   parsed.daemonUrl   ?? DEFAULT_DAEMON_URL,
+      bidWindowMs: parsed.bidWindowMs ?? 2000,
+    };
+  } catch {
+    return { mode: 'standalone', daemonUrl: DEFAULT_DAEMON_URL, bidWindowMs: 2000 };
+  }
+}
+
+/**
+ * Returns the base URL for all daemon requests.
+ * - Default daemon URL  → use the Next.js proxy (avoids CORS on dev)
+ * - Custom daemon URL   → hit it directly (daemon has CORS * headers)
+ */
+function getBase(): string {
+  const { daemonUrl } = getSettings();
+  if (!daemonUrl || daemonUrl === DEFAULT_DAEMON_URL) return PROXY_BASE;
+  return daemonUrl.replace(/\/$/, '');
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -85,10 +126,12 @@ export interface MarketplaceRequest {
 
 /** Returns bids sorted by price ascending (cheapest first). */
 export async function fetchMarketplaceBids(req: MarketplaceRequest): Promise<MarketplaceBid[]> {
-  const resp = await fetch(`${BASE}/v1/marketplace/request`, {
+  const { bidWindowMs } = getSettings();
+  const merged = { bid_timeout_ms: bidWindowMs, ...req };
+  const resp = await fetch(`${getBase()}/v1/marketplace/request`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify(req),
+    body:    JSON.stringify(merged),
   });
   if (!resp.ok) {
     const body = await resp.text();
@@ -115,13 +158,13 @@ export function pickBestBid(bids: MarketplaceBid[]): MarketplaceBid | null {
 // ---------------------------------------------------------------------------
 
 export async function fetchHealth(): Promise<HealthResponse> {
-  const resp = await fetch(`${BASE}/health`, { cache: 'no-store' });
+  const resp = await fetch(`${getBase()}/health`, { cache: 'no-store' });
   if (!resp.ok) throw new Error(`health check failed: ${resp.status}`);
   return resp.json();
 }
 
 export async function fetchPeers(): Promise<PeersResponse> {
-  const resp = await fetch(`${BASE}/v1/peers`, { cache: 'no-store' });
+  const resp = await fetch(`${getBase()}/v1/peers`, { cache: 'no-store' });
   if (!resp.ok) throw new Error(`peers fetch failed: ${resp.status}`);
   // /v1/peers returns NodeCapabilities[] — reshape to { count, peers }
   const caps = await resp.json() as Array<{ peer_id: string }>;
@@ -129,7 +172,7 @@ export async function fetchPeers(): Promise<PeersResponse> {
 }
 
 export async function fetchModels(): Promise<ModelInfo[]> {
-  const resp = await fetch(`${BASE}/v1/models`, { cache: 'no-store' });
+  const resp = await fetch(`${getBase()}/v1/models`, { cache: 'no-store' });
   if (!resp.ok) throw new Error(`models fetch failed: ${resp.status}`);
   // Handle OpenAI list format { object: "list", data: [{ id }] }
   const data = await resp.json();
@@ -159,12 +202,14 @@ export async function fetchModels(): Promise<ModelInfo[]> {
  * or api_url needed on the remote node.
  */
 export async function* streamInfer(
-  req: InferRequest,
+  req:    InferRequest,
+  signal?: AbortSignal,
 ): AsyncGenerator<string | InferenceReceipt> {
-  const resp = await fetch(`${BASE}/v1/infer`, {
+  const resp = await fetch(`${getBase()}/v1/infer`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify(req),
+    signal,
   });
 
   if (!resp.ok) {
@@ -201,12 +246,83 @@ export async function* streamInfer(
 }
 
 // ---------------------------------------------------------------------------
+// Chat completions streaming (OpenAI-compatible, sends full message history)
+// ---------------------------------------------------------------------------
+
+export interface ChatMessage {
+  role:    'user' | 'assistant' | 'system';
+  content: string;
+}
+
+/**
+ * Stream a full conversation via POST /v1/chat/completions.
+ *
+ * Sends the entire message history so the model has full conversation context.
+ * Parses the SSE stream (`data: {...}`) and yields each token string.
+ */
+export async function* streamChatCompletions(
+  messages: ChatMessage[],
+  model:    string,
+  opts:     { maxTokens?: number; temperature?: number; sessionId?: string; signal?: AbortSignal } = {},
+): AsyncGenerator<string> {
+  const resp = await fetch(`${getBase()}/v1/chat/completions`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({
+      model,
+      messages,
+      stream:      true,
+      max_tokens:  opts.maxTokens   ?? 2048,
+      temperature: opts.temperature ?? 0.7,
+      session_id:  opts.sessionId,
+    }),
+    signal: opts.signal,
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`daemon error ${resp.status}: ${body}`);
+  }
+
+  if (!resp.body) throw new Error('daemon returned no response body');
+
+  const reader  = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let   buffer  = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer      = lines.pop() ?? '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith('data:')) continue;
+
+      const data = trimmed.slice(5).trim();
+      if (data === '[DONE]') return;
+
+      try {
+        const chunk = JSON.parse(data);
+        const content: string | undefined = chunk?.choices?.[0]?.delta?.content;
+        if (content) yield content;
+      } catch {
+        // malformed SSE line — skip
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Daemon availability check
 // ---------------------------------------------------------------------------
 
 export async function isDaemonAvailable(): Promise<boolean> {
   try {
-    const resp = await fetch(`${BASE}/health`, {
+    const resp = await fetch(`${getBase()}/health`, {
       cache:  'no-store',
       signal: AbortSignal.timeout(2000),
     });
