@@ -3,18 +3,18 @@
 import { useState, useRef, useCallback } from 'react';
 import {
   streamInfer,
+  streamChatCompletions,
   fetchMarketplaceBids,
   pickBestBid,
   type InferRequest,
-  type InferenceReceipt,
   type MarketplaceBid,
+  type ChatMessage,
 } from '../daemon';
 import {
   appendMessage,
   updateLastAssistantMessage,
   getSession,
   type SessionRecord,
-  type MessageReceipt,
 } from '../session-store';
 
 export interface StreamState {
@@ -51,10 +51,13 @@ export function useStream(
       const afterAppend = getSession(session.id);
       if (afterAppend) onUpdate(afterAppend);
 
+      // Create a fresh AbortController for this request so abort() can cancel it.
+      const controller = new AbortController();
+      abortRef.current = controller;
+
       setState({ streaming: true, streamingText: '', error: null, executingNode: null });
 
       let accumulated = '';
-      let receipt: MessageReceipt | undefined;
       const startMs = Date.now();
 
       try {
@@ -66,14 +69,11 @@ export function useStream(
             model:                modelId,
             max_tokens:           2048,
             accepted_settlements: ['free', 'receipt'],
-            bid_timeout_ms:       2000,
           });
           const winner = pickBestBid(bids);
           if (winner) {
             executingNode = winner;
             winnerPeerId  = winner.node_peer_id;
-            // Stamp nodeId on the placeholder message immediately so the UI
-            // shows which node is running before the first token arrives.
             updateLastAssistantMessage(session.id, '', { nodeId: winner.node_peer_id });
             setState(prev => ({ ...prev, executingNode: winner }));
           }
@@ -81,47 +81,56 @@ export function useStream(
           // No P2P / standalone mode — fall through to local inference
         }
 
-        const req: InferRequest = {
-          model_id:   modelId,
-          prompt:     userText,
-          session_id: session.id,
-          max_tokens: 2048,
-          // Pass peer_id when a remote node won — local node routes via P2P gossipsub.
-          // No port forwarding or api_url needed on the remote side.
-          peer_id:    winnerPeerId,
-        };
+        if (winnerPeerId) {
+          // P2P path: route to the winning peer via /v1/infer with peer_id.
+          const req: InferRequest = {
+            model_id:   modelId,
+            prompt:     userText,
+            session_id: session.id,
+            max_tokens: 2048,
+            peer_id:    winnerPeerId,
+          };
+          for await (const chunk of streamInfer(req, controller.signal)) {
+            if (typeof chunk === 'string') {
+              accumulated += chunk;
+              setState(prev => ({ ...prev, streamingText: accumulated }));
+              updateLastAssistantMessage(session.id, accumulated);
+            }
+          }
+        } else {
+          // Local path: send full conversation history via /v1/chat/completions
+          // so the model has context of all prior turns.
+          const allMessages = session.messages
+            .filter(m => m.content.trim())
+            .slice(0, -1)  // exclude the blank placeholder we just appended
+            .map<ChatMessage>(m => ({ role: m.role, content: m.content }));
+          allMessages.push({ role: 'user', content: userText });
 
-        for await (const chunk of streamInfer(req)) {
-          if (typeof chunk === 'string') {
-            accumulated += chunk;
+          for await (const token of streamChatCompletions(allMessages, modelId, {
+            maxTokens: 2048,
+            sessionId: session.id,
+            signal:    controller.signal,
+          })) {
+            accumulated += token;
             setState(prev => ({ ...prev, streamingText: accumulated }));
             updateLastAssistantMessage(session.id, accumulated);
-          } else {
-            // InferenceReceipt arrived on final chunk
-            receipt = {
-              proofId:      chunk.proof_id,
-              settlementId: chunk.settlement_id,
-              proofValid:   chunk.proof_valid,
-              inputTokens:  chunk.input_tokens,
-              outputTokens: chunk.output_tokens,
-              latencyMs:    chunk.latency_ms,
-              nodePubkey:   chunk.node_pubkey,
-              signature:    chunk.signature,
-              canonicalHex: chunk.canonical_bytes_hex,
-              chainTxId:    chunk.chain_tx_id,
-            };
           }
         }
 
         updateLastAssistantMessage(session.id, accumulated, {
           durationMs: Date.now() - startMs,
           nodeId:     executingNode?.node_peer_id,
-          receipt,
         });
         setState(prev => ({ ...prev, streaming: false, streamingText: '', error: null }));
       } catch (err: unknown) {
+        // AbortError is expected when the user clicks Stop — don't surface it as an error.
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          updateLastAssistantMessage(session.id, accumulated || '[Stopped]');
+          setState(prev => ({ ...prev, streaming: false, streamingText: '', error: null }));
+          return;
+        }
         const msg = err instanceof Error ? err.message : String(err);
-        updateLastAssistantMessage(session.id, `[Error: ${msg}]`);
+        updateLastAssistantMessage(session.id, accumulated ? accumulated : `[Error: ${msg}]`);
         setState(prev => ({ ...prev, streaming: false, streamingText: '', error: msg }));
       } finally {
         const updated = getSession(session.id);
@@ -133,7 +142,7 @@ export function useStream(
 
   const abort = useCallback(() => {
     abortRef.current?.abort();
-    setState(prev => ({ ...prev, streaming: false }));
+    // State update happens in the catch(AbortError) branch of send()
   }, []);
 
   return { ...state, send, abort };
