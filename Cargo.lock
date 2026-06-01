@@ -2556,6 +2556,7 @@ dependencies = [
  "futures",
  "hex",
  "inference",
+ "once_cell",
  "p2p",
  "prometheus",
  "rand 0.8.5",
