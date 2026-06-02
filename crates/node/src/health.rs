@@ -83,11 +83,13 @@ async fn peers_handler(State(state): State<HealthState>) -> impl IntoResponse {
 }
 
 async fn metrics_handler() -> impl IntoResponse {
-    // Placeholder — full Prometheus registry wired in Phase 9.
-    (
-        StatusCode::OK,
-        "# TYPE deai_info gauge\ndeai_info{version=\"0.1.0\"} 1\n",
-    )
+    let body = crate::metrics::gather_text();
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "Content-Type",
+        "text/plain; version=0.0.4; charset=utf-8".parse().unwrap(),
+    );
+    (StatusCode::OK, headers, body)
 }
 
 // ---------------------------------------------------------------------------
