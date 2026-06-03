@@ -450,11 +450,11 @@ impl DeAIDaemon {
             ContextStoreKind::Local => {
                 let dir = expand_tilde(&config.node.data_dir).join("contexts");
                 info!(path = %dir.display(), "context store: local file");
-                match LocalFileContextStore::new(&dir, config.context.max_messages) {
+                match LocalFileContextStore::new(&dir, config.context.max_messages, config.context.ttl_seconds) {
                     Ok(s)  => s as Arc<dyn ContextStore>,
                     Err(e) => {
                         warn!(%e, "local context store init failed — falling back to memory");
-                        InMemoryContextStore::new(config.context.max_messages) as Arc<dyn ContextStore>
+                        InMemoryContextStore::new(config.context.max_messages, config.context.ttl_seconds) as Arc<dyn ContextStore>
                     }
                 }
             }
@@ -469,18 +469,18 @@ impl DeAIDaemon {
                     Ok(s)  => s,
                     Err(e) => {
                         warn!(%e, "redis context store init failed — falling back to memory");
-                        InMemoryContextStore::new(config.context.max_messages)
+                        InMemoryContextStore::new(config.context.max_messages, config.context.ttl_seconds)
                     }
                 }
             }
             #[cfg(not(feature = "redis"))]
             ContextStoreKind::Redis => {
                 warn!("context store: redis requested but binary not compiled with --features redis — using memory");
-                InMemoryContextStore::new(config.context.max_messages)
+                InMemoryContextStore::new(config.context.max_messages, config.context.ttl_seconds)
             }
             _ => {
                 info!("context store: memory (in-process, not persisted)");
-                InMemoryContextStore::new(config.context.max_messages)
+                InMemoryContextStore::new(config.context.max_messages, config.context.ttl_seconds)
             }
         };
 
