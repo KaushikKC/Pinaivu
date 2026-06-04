@@ -8,6 +8,7 @@ mod daemon;
 mod erc8004;
 mod health;
 mod identity;
+mod metrics;
 mod x402;
 
 use clap::Parser as _;
@@ -245,6 +246,9 @@ async fn cmd_start(mut config: NodeConfig) -> anyhow::Result<()> {
 
     // Start inference API server (used by the TS SDK + web UI in standalone mode)
     let concurrent_slots = config.gpu.concurrent_jobs.max(1);
+    let seen_ids = std::sync::Arc::new(tokio::sync::Mutex::new(
+        std::collections::HashMap::<uuid::Uuid, u64>::new(),
+    ));
     let api_state = api::ApiState {
         engine:              daemon.inference_engine(),
         settlements:         daemon.settlements().to_vec(),
@@ -260,6 +264,8 @@ async fn cmd_start(mut config: NodeConfig) -> anyhow::Result<()> {
         api_key:             config.api.api_key.clone(),
         inference_sem:       std::sync::Arc::new(tokio::sync::Semaphore::new(concurrent_slots)),
         storage:             daemon.storage_client(),
+        max_context_tokens:  config.inference.max_context_length,
+        seen_ids,
     };
     api::start(config.health.api_port, api_state).await?;
 
