@@ -16,36 +16,97 @@ const PROXY_BASE = '/api/daemon';
 interface DeAISettings {
   mode:        string;
   daemonUrl:   string;
+  nodeUrls:    string[];   // ordered list of node URLs; failover in sequence
   bidWindowMs: number;
 }
 
 function getSettings(): DeAISettings {
   if (typeof window === 'undefined') {
-    return { mode: 'standalone', daemonUrl: DEFAULT_DAEMON_URL, bidWindowMs: 2000 };
+    return { mode: 'standalone', daemonUrl: DEFAULT_DAEMON_URL, nodeUrls: [DEFAULT_DAEMON_URL], bidWindowMs: 2000 };
   }
   try {
     const raw = localStorage.getItem('deai:settings');
-    if (!raw) return { mode: 'standalone', daemonUrl: DEFAULT_DAEMON_URL, bidWindowMs: 2000 };
+    if (!raw) return { mode: 'standalone', daemonUrl: DEFAULT_DAEMON_URL, nodeUrls: [DEFAULT_DAEMON_URL], bidWindowMs: 2000 };
     const parsed = JSON.parse(raw) as Partial<DeAISettings>;
+    const primary = parsed.daemonUrl ?? DEFAULT_DAEMON_URL;
+    // Merge legacy daemonUrl with the newer nodeUrls list
+    const nodeUrls = parsed.nodeUrls?.length
+      ? parsed.nodeUrls
+      : [primary];
     return {
       mode:        parsed.mode        ?? 'standalone',
-      daemonUrl:   parsed.daemonUrl   ?? DEFAULT_DAEMON_URL,
+      daemonUrl:   primary,
+      nodeUrls,
       bidWindowMs: parsed.bidWindowMs ?? 2000,
     };
   } catch {
-    return { mode: 'standalone', daemonUrl: DEFAULT_DAEMON_URL, bidWindowMs: 2000 };
+    return { mode: 'standalone', daemonUrl: DEFAULT_DAEMON_URL, nodeUrls: [DEFAULT_DAEMON_URL], bidWindowMs: 2000 };
   }
 }
 
+// Cache the last known-good base URL so streaming requests use a stable node.
+let _activeBase: string | null = null;
+let _activeBaseChecked = 0;
+const ACTIVE_BASE_TTL_MS = 30_000;
+
 /**
  * Returns the base URL for all daemon requests.
- * - Default daemon URL  → use the Next.js proxy (avoids CORS on dev)
- * - Custom daemon URL   → hit it directly (daemon has CORS * headers)
+ * - Single node / default → use the Next.js proxy (avoids CORS on dev)
+ * - Multiple nodes        → probe each in order; cache the first reachable one
  */
+async function getActiveBase(): Promise<string> {
+  const { nodeUrls } = getSettings();
+
+  // Single default node → keep using the proxy
+  if (nodeUrls.length === 1 && nodeUrls[0] === DEFAULT_DAEMON_URL) {
+    return PROXY_BASE;
+  }
+
+  // Return cached active base if still fresh
+  const now = Date.now();
+  if (_activeBase && now - _activeBaseChecked < ACTIVE_BASE_TTL_MS) {
+    return _activeBase;
+  }
+
+  for (const url of nodeUrls) {
+    const base = url.replace(/\/$/, '');
+    try {
+      const resp = await fetch(`${base}/health`, {
+        cache: 'no-store',
+        signal: AbortSignal.timeout(2000),
+      });
+      if (resp.ok) {
+        _activeBase = base;
+        _activeBaseChecked = now;
+        return base;
+      }
+    } catch { /* try next */ }
+  }
+
+  // All nodes unreachable — fall back to primary so error surfaces normally
+  const primary = nodeUrls[0].replace(/\/$/, '');
+  _activeBase = primary;
+  _activeBaseChecked = now;
+  return primary;
+}
+
+/** Synchronous best-effort base — uses the cached active node or the proxy. */
 function getBase(): string {
-  const { daemonUrl } = getSettings();
-  if (!daemonUrl || daemonUrl === DEFAULT_DAEMON_URL) return PROXY_BASE;
-  return daemonUrl.replace(/\/$/, '');
+  if (_activeBase) return _activeBase;
+  const { nodeUrls } = getSettings();
+  if (nodeUrls.length === 1 && nodeUrls[0] === DEFAULT_DAEMON_URL) return PROXY_BASE;
+  return nodeUrls[0].replace(/\/$/, '');
+}
+
+/** Returns the URL of the currently active node (for status display). */
+export function getActiveNodeUrl(): string {
+  return _activeBase ?? DEFAULT_DAEMON_URL;
+}
+
+/** Invalidate the cached active node so the next request re-probes. */
+export function invalidateActiveNode(): void {
+  _activeBase = null;
+  _activeBaseChecked = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -128,7 +189,8 @@ export interface MarketplaceRequest {
 export async function fetchMarketplaceBids(req: MarketplaceRequest): Promise<MarketplaceBid[]> {
   const { bidWindowMs } = getSettings();
   const merged = { bid_timeout_ms: bidWindowMs, ...req };
-  const resp = await fetch(`${getBase()}/v1/marketplace/request`, {
+  const base = await getActiveBase();
+  const resp = await fetch(`${base}/v1/marketplace/request`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify(merged),
@@ -158,23 +220,24 @@ export function pickBestBid(bids: MarketplaceBid[]): MarketplaceBid | null {
 // ---------------------------------------------------------------------------
 
 export async function fetchHealth(): Promise<HealthResponse> {
-  const resp = await fetch(`${getBase()}/health`, { cache: 'no-store' });
+  const base = await getActiveBase();
+  const resp = await fetch(`${base}/health`, { cache: 'no-store' });
   if (!resp.ok) throw new Error(`health check failed: ${resp.status}`);
   return resp.json();
 }
 
 export async function fetchPeers(): Promise<PeersResponse> {
-  const resp = await fetch(`${getBase()}/v1/peers`, { cache: 'no-store' });
+  const base = await getActiveBase();
+  const resp = await fetch(`${base}/v1/peers`, { cache: 'no-store' });
   if (!resp.ok) throw new Error(`peers fetch failed: ${resp.status}`);
-  // /v1/peers returns NodeCapabilities[] — reshape to { count, peers }
   const caps = await resp.json() as Array<{ peer_id: string }>;
   return { count: caps.length, peers: caps.map(c => c.peer_id) };
 }
 
 export async function fetchModels(): Promise<ModelInfo[]> {
-  const resp = await fetch(`${getBase()}/v1/models`, { cache: 'no-store' });
+  const base = await getActiveBase();
+  const resp = await fetch(`${base}/v1/models`, { cache: 'no-store' });
   if (!resp.ok) throw new Error(`models fetch failed: ${resp.status}`);
-  // Handle OpenAI list format { object: "list", data: [{ id }] }
   const data = await resp.json();
   const list: Array<{ id?: string; name?: string }> = Array.isArray(data) ? data : (data.data ?? []);
   return list.map(m => ({ name: m.id ?? m.name ?? '' }));
@@ -205,7 +268,8 @@ export async function* streamInfer(
   req:    InferRequest,
   signal?: AbortSignal,
 ): AsyncGenerator<string | InferenceReceipt> {
-  const resp = await fetch(`${getBase()}/v1/infer`, {
+  const base = await getActiveBase();
+  const resp = await fetch(`${base}/v1/infer`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify(req),
@@ -265,7 +329,8 @@ export async function* streamChatCompletions(
   model:    string,
   opts:     { maxTokens?: number; temperature?: number; sessionId?: string; signal?: AbortSignal } = {},
 ): AsyncGenerator<string> {
-  const resp = await fetch(`${getBase()}/v1/chat/completions`, {
+  const base = await getActiveBase();
+  const resp = await fetch(`${base}/v1/chat/completions`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({
@@ -322,12 +387,15 @@ export async function* streamChatCompletions(
 
 export async function isDaemonAvailable(): Promise<boolean> {
   try {
-    const resp = await fetch(`${getBase()}/health`, {
+    const base = await getActiveBase();
+    const resp = await fetch(`${base}/health`, {
       cache:  'no-store',
       signal: AbortSignal.timeout(2000),
     });
+    if (!resp.ok) invalidateActiveNode();
     return resp.ok;
   } catch {
+    invalidateActiveNode();
     return false;
   }
 }
