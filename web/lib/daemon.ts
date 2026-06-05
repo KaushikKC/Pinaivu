@@ -208,11 +208,37 @@ export async function fetchMarketplaceBids(req: MarketplaceRequest): Promise<Mar
 }
 
 /**
- * Pick the best bid: lowest price. All nodes are now reachable via P2P routing
- * — api_url is no longer required for inference.
+ * Pick the best bid using a composite score:
+ *   0.5 × reputation  +  0.3 × (1/price)  +  0.2 × (1 - load_pct)
+ *
+ * Each dimension is normalised to [0, 1] across the bid set so the weights
+ * are balanced. A 0-reputation node that undercuts by 1 NanoX no longer wins
+ * automatically — high load and zero reputation both drag its score down.
  */
 export function pickBestBid(bids: MarketplaceBid[]): MarketplaceBid | null {
-  return bids[0] ?? null;
+  if (bids.length === 0) return null;
+  if (bids.length === 1) return bids[0];
+
+  const maxRep    = Math.max(...bids.map(b => b.reputation_score), 1e-9);
+  const rawPrices = bids.map(b => b.accepted_settlements[0]?.price_per_1k ?? Infinity);
+  const minPrice  = Math.min(...rawPrices.filter(isFinite));
+
+  let best: MarketplaceBid = bids[0];
+  let bestScore = -Infinity;
+
+  for (let i = 0; i < bids.length; i++) {
+    const bid   = bids[i];
+    const price = rawPrices[i];
+
+    const repScore   = bid.reputation_score / maxRep;
+    const priceScore = isFinite(price) && minPrice > 0 ? minPrice / price : 0;
+    const loadScore  = (100 - Math.min(bid.current_load_pct ?? 0, 100)) / 100;
+
+    const score = repScore * 0.5 + priceScore * 0.3 + loadScore * 0.2;
+    if (score > bestScore) { bestScore = score; best = bid; }
+  }
+
+  return best;
 }
 
 // ---------------------------------------------------------------------------
@@ -377,6 +403,136 @@ export async function* streamChatCompletions(
       } catch {
         // malformed SSE line — skip
       }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// E2E encrypted inference (X25519 ECDH + AES-256-GCM)
+// ---------------------------------------------------------------------------
+
+/** True when the primary node URL is not on localhost — use encryption in that case. */
+export function isRemoteDaemon(): boolean {
+  if (typeof window === 'undefined') return false;
+  const { nodeUrls } = getSettings();
+  const url = nodeUrls[0] ?? DEFAULT_DAEMON_URL;
+  return !url.match(/localhost|127\.0\.0\.1|0\.0\.0\.0/);
+}
+
+function toHex(buf: ArrayBuffer | Uint8Array): string {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function toBase64(buf: ArrayBuffer | Uint8Array): string {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  return btoa(String.fromCharCode(...bytes));
+}
+
+/** KDF matching the Rust server: SHA-256("deai-aes-key-v1" || shared_secret). */
+async function deriveAesKey(sharedBits: ArrayBuffer): Promise<CryptoKey> {
+  const label    = new TextEncoder().encode('deai-aes-key-v1');
+  const shared   = new Uint8Array(sharedBits);
+  const material = new Uint8Array(label.length + shared.length);
+  material.set(label);
+  material.set(shared, label.length);
+  const keyBytes = await crypto.subtle.digest('SHA-256', material);
+  return crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, ['encrypt']);
+}
+
+/**
+ * Stream inference with browser-side E2E encryption.
+ *
+ * Performs X25519 ECDH with the node's static key (fetched from /v1/pubkey),
+ * derives a per-session AES-256-GCM key, encrypts the prompt, and calls
+ * /v1/infer_encrypted. Matches the Rust server in identity.rs exactly.
+ *
+ * Falls back to plaintext streamInfer if the browser doesn't support X25519
+ * WebCrypto (Chrome < 113, Firefox < 116).
+ */
+export async function* streamInferEncrypted(
+  req:    InferRequest,
+  signal?: AbortSignal,
+): AsyncGenerator<string | InferenceReceipt> {
+  const base = await getActiveBase();
+
+  try {
+    // 1. Fetch server X25519 pubkey
+    const pkResp  = await fetch(`${base}/v1/pubkey`, { cache: 'no-store' });
+    const pkData  = await pkResp.json() as { x25519_pubkey: string };
+    const serverPubBytes = new Uint8Array(
+      pkData.x25519_pubkey.match(/.{2}/g)!.map(b => parseInt(b, 16))
+    );
+
+    // 2. Generate ephemeral X25519 keypair and export public half
+    const myPair  = await crypto.subtle.generateKey(
+      { name: 'X25519' } as AlgorithmIdentifier, true, ['deriveBits']
+    ) as CryptoKeyPair;
+    const myPubRaw = await crypto.subtle.exportKey('raw', myPair.publicKey);
+
+    // 3. Import server pubkey, derive shared secret
+    const serverKey = await crypto.subtle.importKey(
+      'raw', serverPubBytes, { name: 'X25519' } as AlgorithmIdentifier, false, []
+    );
+    const sharedBits = await crypto.subtle.deriveBits(
+      { name: 'X25519', public: serverKey } as AlgorithmIdentifier,
+      myPair.privateKey, 256,
+    );
+
+    // 4. Derive AES key with domain-separated KDF
+    const aesKey = await deriveAesKey(sharedBits);
+
+    // 5. Encrypt prompt
+    const nonce      = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: nonce },
+      aesKey,
+      new TextEncoder().encode(req.prompt),
+    );
+
+    const encBody = {
+      model_id:             req.model_id,
+      session_id:           req.session_id,
+      max_tokens:           req.max_tokens,
+      temperature:          req.temperature,
+      client_pubkey_x25519: toHex(myPubRaw),
+      prompt_encrypted:     toBase64(ciphertext),
+      prompt_nonce:         toBase64(nonce),
+    };
+
+    const resp = await fetch(`${base}/v1/infer_encrypted`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(encBody), signal,
+    });
+
+    if (!resp.ok) { const t = await resp.text(); throw new Error(`daemon ${resp.status}: ${t}`); }
+    if (!resp.body) throw new Error('no response body');
+
+    const reader = resp.body.getReader();
+    const dec    = new TextDecoder();
+    let   buf    = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const chunk = JSON.parse(line) as TokenChunk;
+          if (chunk.token)    yield chunk.token;
+          if (chunk.receipt)  yield chunk.receipt;
+          if (chunk.is_final) return;
+        } catch { /* skip */ }
+      }
+    }
+  } catch (e: unknown) {
+    // Graceful fallback: X25519 not supported in this browser → plaintext
+    if (e instanceof DOMException && e.name === 'NotSupportedError') {
+      yield* streamInfer(req, signal);
+    } else {
+      throw e;
     }
   }
 }
