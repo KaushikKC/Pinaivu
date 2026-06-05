@@ -8,6 +8,7 @@ mod daemon;
 mod erc8004;
 mod health;
 mod identity;
+mod journal;
 mod metrics;
 mod x402;
 
@@ -261,6 +262,7 @@ async fn cmd_start(mut config: NodeConfig) -> anyhow::Result<()> {
         p2p_service:         daemon.p2p_service_cloned(),
         x402_config:         config.x402.clone(),
         context_store:       daemon.context_store(),
+        job_journal:         daemon.job_journal(),
         api_key:             config.api.api_key.clone(),
         inference_sem:       std::sync::Arc::new(tokio::sync::Semaphore::new(concurrent_slots)),
         storage:             daemon.storage_client(),
