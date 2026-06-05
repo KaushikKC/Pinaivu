@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   useCallback,
@@ -67,6 +68,16 @@ export function ChatWindow({ sessionId }: Props) {
     return () => { cancelled = true; clearInterval(timer); };
   }, []);
 
+  const MAX_CONTEXT_TOKENS = 4096;
+
+  const estimatedTokens = useMemo(() => {
+    const historyChars = (session?.messages ?? []).reduce((s, m) => s + m.content.length, 0);
+    return Math.round((historyChars + input.length) / 4);
+  }, [session?.messages, input]);
+
+  const tokenPct   = Math.min((estimatedTokens / MAX_CONTEXT_TOKENS) * 100, 100);
+  const tokenColor = tokenPct >= 90 ? 'bg-red-500' : tokenPct >= 75 ? 'bg-yellow-500' : 'bg-emerald-500';
+
   const { streaming, streamingText, error, executingNode, send, abort } = useStream(
     session ?? { id: sessionId, modelId: model, title: '', createdAt: 0, updatedAt: 0, messages: [] },
     (updated) => setSession(updated),
@@ -118,50 +129,69 @@ export function ChatWindow({ sessionId }: Props) {
   return (
     <div className="flex flex-col h-full">
       {/* Top bar */}
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-surface-2 bg-surface-1 flex-shrink-0">
-        <div className="flex items-center gap-2">
-          <Cpu className="w-4 h-4 text-accent" />
-          {models.length > 0 ? (
-            <select
-              value={model}
-              onChange={e => setModel(e.target.value)}
-              className="text-sm bg-transparent text-white border-none outline-none cursor-pointer"
-              disabled={streaming}
-            >
-              {models.map(m => (
-                <option key={m} value={m} className="bg-surface-2">{m}</option>
-              ))}
-            </select>
-          ) : (
-            <span className="text-sm text-white font-medium">{model}</span>
-          )}
+      <div className="border-b border-surface-2 bg-surface-1 flex-shrink-0">
+        <div className="flex items-center justify-between px-4 py-2.5">
+          <div className="flex items-center gap-2">
+            <Cpu className="w-4 h-4 text-accent" />
+            {models.length > 0 ? (
+              <select
+                value={model}
+                onChange={e => setModel(e.target.value)}
+                className="text-sm bg-transparent text-white border-none outline-none cursor-pointer"
+                disabled={streaming}
+              >
+                {models.map(m => (
+                  <option key={m} value={m} className="bg-surface-2">{m}</option>
+                ))}
+              </select>
+            ) : (
+              <span className="text-sm text-white font-medium">{model}</span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3">
+            {/* Network / Standalone badge */}
+            {peerCount !== null && peerCount > 0 ? (
+              <div className="flex items-center gap-1 text-[10px] text-violet-300 font-medium">
+                <Network className="w-3 h-3" />
+                <span>{peerCount} peer{peerCount !== 1 ? 's' : ''}</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1 text-[10px] text-muted font-medium">
+                <Network className="w-3 h-3" />
+                <span>Standalone</span>
+              </div>
+            )}
+            <div className="flex items-center gap-1.5 text-[10px] text-emerald-400 font-medium">
+              <ShieldCheck className="w-3 h-3" />
+              <span>No logs · Private</span>
+            </div>
+            <div className="flex items-center gap-1 text-[10px] text-blue-400 font-medium">
+              <Lock className="w-3 h-3" />
+              <span>AES-256-GCM</span>
+            </div>
+            <span className="text-xs text-muted font-mono">
+              {session.messages.length > 0
+                ? `${Math.ceil(session.messages.length / 2)} turn${Math.ceil(session.messages.length / 2) !== 1 ? 's' : ''}`
+                : 'new chat'}
+            </span>
+          </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          {/* Network / Standalone badge */}
-          {peerCount !== null && peerCount > 0 ? (
-            <div className="flex items-center gap-1 text-[10px] text-violet-300 font-medium">
-              <Network className="w-3 h-3" />
-              <span>{peerCount} peer{peerCount !== 1 ? 's' : ''}</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-1 text-[10px] text-muted font-medium">
-              <Network className="w-3 h-3" />
-              <span>Standalone</span>
-            </div>
-          )}
-          <div className="flex items-center gap-1.5 text-[10px] text-emerald-400 font-medium">
-            <ShieldCheck className="w-3 h-3" />
-            <span>No logs · Private</span>
+        {/* Token budget bar */}
+        <div className="px-4 pb-1.5 flex items-center gap-2">
+          <div className="flex-1 h-1 rounded-full bg-surface-3 overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${tokenColor}`}
+              style={{ width: `${tokenPct}%` }}
+            />
           </div>
-          <div className="flex items-center gap-1 text-[10px] text-blue-400 font-medium">
-            <Lock className="w-3 h-3" />
-            <span>AES-256-GCM</span>
-          </div>
-          <span className="text-xs text-muted font-mono">
-            {session.messages.length > 0
-              ? `${Math.ceil(session.messages.length / 2)} turn${Math.ceil(session.messages.length / 2) !== 1 ? 's' : ''}`
-              : 'new chat'}
+          <span
+            className={`text-[10px] font-mono tabular-nums flex-shrink-0 ${
+              tokenPct >= 90 ? 'text-red-400' : tokenPct >= 75 ? 'text-yellow-400' : 'text-muted'
+            }`}
+          >
+            {estimatedTokens.toLocaleString()} / {MAX_CONTEXT_TOKENS.toLocaleString()} tok
           </span>
         </div>
       </div>
