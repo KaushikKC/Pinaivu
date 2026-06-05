@@ -10,10 +10,11 @@
 //!   POST /v1/marketplace/request — broadcast an inference request, collect bids
 //!   GET  /health               — node health / settlement info
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 
 use aes_gcm::{
     Aes256Gcm, Key, Nonce,
@@ -72,9 +73,14 @@ pub struct ApiState {
     /// Shared secret for API key authentication. Empty → auth disabled.
     pub api_key:        String,
     /// Limits concurrent Ollama calls to prevent GPU OOM / starvation.
-    pub inference_sem:  Arc<Semaphore>,
+    pub inference_sem:       Arc<Semaphore>,
     /// Blob storage backend — writes inference outputs after completion.
-    pub storage:        Arc<dyn storage::StorageClient>,
+    pub storage:             Arc<dyn storage::StorageClient>,
+    /// Maximum token budget for the context window sent to the model.
+    /// Messages are trimmed oldest-first when the estimate exceeds this.
+    pub max_context_tokens:  u32,
+    /// Seen request IDs → expiry timestamp (unix secs). Prevents replay attacks.
+    pub seen_ids:            Arc<Mutex<HashMap<uuid::Uuid, u64>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +114,74 @@ fn check_api_key(headers: &HeaderMap, api_key: &str) -> Result<(), Response> {
             Err((StatusCode::UNAUTHORIZED, headers, Json(body)).into_response())
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Replay protection
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if this request_id was already seen within the last 5 minutes.
+/// Inserts the id on first call. Prunes expired entries opportunistically.
+async fn check_and_mark_seen(id: uuid::Uuid, seen: &Mutex<HashMap<uuid::Uuid, u64>>) -> bool {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let expiry = now + 300; // 5-minute replay window
+
+    let mut map = seen.lock().await;
+
+    // Opportunistic cleanup: remove entries that have expired.
+    map.retain(|_, exp| *exp > now);
+
+    if map.contains_key(&id) {
+        return true; // duplicate
+    }
+    map.insert(id, expiry);
+    false
+}
+
+// ---------------------------------------------------------------------------
+// Context window trimming
+// ---------------------------------------------------------------------------
+
+/// Estimate token count for a string: 1 token ≈ 4 characters.
+fn estimate_tokens(s: &str) -> u32 {
+    ((s.len() as f32) / 4.0).ceil() as u32
+}
+
+/// Trim `cw.recent_messages` from the oldest end until the estimated total
+/// token count fits within `max_tokens`. Returns how many messages were dropped.
+fn trim_context_window(cw: &mut ContextWindow, max_tokens: u32) -> usize {
+    if max_tokens == 0 {
+        return 0;
+    }
+
+    let system_tokens = cw.system_prompt.as_deref()
+        .map(estimate_tokens)
+        .unwrap_or(0);
+    let budget = max_tokens.saturating_sub(system_tokens);
+
+    // Walk from newest to oldest, keeping as many messages as fit.
+    let mut used = 0u32;
+    let mut keep_from = cw.recent_messages.len();
+
+    for (i, msg) in cw.recent_messages.iter().enumerate().rev() {
+        let toks = estimate_tokens(&msg.content) + 4; // +4 for role overhead
+        if used + toks > budget {
+            keep_from = i + 1;
+            break;
+        }
+        used += toks;
+        if i == 0 { keep_from = 0; }
+    }
+
+    let dropped = keep_from;
+    if dropped > 0 {
+        cw.recent_messages.drain(..dropped);
+        crate::metrics::CONTEXT_TRIMS_TOTAL.inc();
+    }
+    dropped
 }
 
 // ---------------------------------------------------------------------------
@@ -419,12 +493,31 @@ async fn chat_completions_handler(
     let max_tok  = body.max_tokens.unwrap_or(2048);
     let temp     = body.temperature.unwrap_or(0.7);
 
-    let (context_window, prompt) = messages_to_context(&body.messages);
+    // ── Replay protection ─────────────────────────────────────────────────────
+    if check_and_mark_seen(request_id, &state.seen_ids).await {
+        crate::metrics::REPLAY_REJECTED_TOTAL.inc();
+        crate::metrics::REQUESTS_TOTAL.with_label_values(&["chat", "replay"]).inc();
+        let err = serde_json::json!({
+            "error": { "message": "duplicate request_id — already processed", "type": "conflict" }
+        });
+        return (StatusCode::CONFLICT, cors_headers(), Json(err)).into_response();
+    }
+
+    let (mut context_window, prompt) = messages_to_context(&body.messages);
+
+    // ── Context window trimming ───────────────────────────────────────────────
+    let dropped = trim_context_window(&mut context_window, state.max_context_tokens);
+    if dropped > 0 {
+        debug!(dropped, "context: trimmed oldest messages to fit token budget");
+    }
 
     // ── Concurrency gate ──────────────────────────────────────────────────────
+    crate::metrics::CONCURRENT_REQUESTS.inc();
     let _permit = match state.inference_sem.try_acquire() {
         Ok(p) => p,
         Err(_) => {
+            crate::metrics::CONCURRENT_REQUESTS.dec();
+            crate::metrics::REQUESTS_TOTAL.with_label_values(&["chat", "capacity"]).inc();
             let err = serde_json::json!({
                 "error": { "message": "node at capacity — retry shortly", "type": "capacity_error" }
             });
@@ -434,6 +527,7 @@ async fn chat_completions_handler(
         }
     };
 
+    let start_ts = Instant::now();
     let (tokens, latency_ms) = match run_and_collect(
         state.engine.as_ref(),
         &model,
@@ -445,6 +539,8 @@ async fn chat_completions_handler(
     ).await {
         Ok(v)  => v,
         Err(e) => {
+            crate::metrics::CONCURRENT_REQUESTS.dec();
+            crate::metrics::REQUESTS_TOTAL.with_label_values(&["chat", "error"]).inc();
             error!(%e, "chat completions inference failed");
             let err = serde_json::json!({
                 "error": { "message": e.to_string(), "type": "internal_error" }
@@ -452,10 +548,19 @@ async fn chat_completions_handler(
             return (StatusCode::INTERNAL_SERVER_ERROR, cors_headers(), Json(err)).into_response();
         }
     };
+    crate::metrics::CONCURRENT_REQUESTS.dec();
 
     let input_toks  = (prompt.split_whitespace().count() as u32).max(1);
     let output_toks = (tokens.len() as u32).max(1);
     let full_output = tokens.join("");
+
+    // ── Record metrics ────────────────────────────────────────────────────────
+    crate::metrics::REQUESTS_TOTAL.with_label_values(&["chat", "ok"]).inc();
+    crate::metrics::INFERENCE_LATENCY_MS
+        .with_label_values(&["chat"])
+        .observe(start_ts.elapsed().as_millis() as f64);
+    crate::metrics::TOKENS_TOTAL.with_label_values(&["input"]).inc_by(input_toks as u64);
+    crate::metrics::TOKENS_TOTAL.with_label_values(&["output"]).inc_by(output_toks as u64);
 
     debug!(%request_id, %model, input_toks, output_toks, latency_ms, "chat completion done");
 
@@ -633,10 +738,16 @@ async fn infer_handler(
 
     let request_id: RequestId = uuid::Uuid::new_v4();
 
+    // ── Replay protection ─────────────────────────────────────────────────────
+    if check_and_mark_seen(request_id, &state.seen_ids).await {
+        crate::metrics::REPLAY_REJECTED_TOTAL.inc();
+        crate::metrics::REQUESTS_TOTAL.with_label_values(&["infer", "replay"]).inc();
+        let err = serde_json::json!({"error": "duplicate request_id — already processed"});
+        return (StatusCode::CONFLICT, cors_headers(), Json(err)).into_response();
+    }
+
     // ── Load conversation history from context store ───────────────────────────
-    // When session_id is present, replay all prior turns so the model has
-    // full conversation context even though only the new prompt is sent.
-    let context_window = if let Some(ref sid) = body.session_id {
+    let mut context_window = if let Some(ref sid) = body.session_id {
         match state.context_store.get_messages(sid).await {
             Ok(history) if !history.is_empty() => {
                 debug!(session_id = %sid, turns = history.len(), "context: loaded from store");
@@ -652,10 +763,19 @@ async fn infer_handler(
         ContextWindow::default()
     };
 
+    // ── Context window trimming ───────────────────────────────────────────────
+    let dropped = trim_context_window(&mut context_window, state.max_context_tokens);
+    if dropped > 0 {
+        debug!(dropped, "context: trimmed oldest messages to fit token budget");
+    }
+
     // ── Concurrency gate — prevents GPU OOM under parallel requests ───────────
+    crate::metrics::CONCURRENT_REQUESTS.inc();
     let _permit = match state.inference_sem.try_acquire() {
         Ok(p) => p,
         Err(_) => {
+            crate::metrics::CONCURRENT_REQUESTS.dec();
+            crate::metrics::REQUESTS_TOTAL.with_label_values(&["infer", "capacity"]).inc();
             let err = serde_json::json!({"error": "node at capacity — retry shortly"});
             let mut h = cors_headers();
             h.insert("Retry-After", "5".parse().unwrap());
@@ -663,6 +783,7 @@ async fn infer_handler(
         }
     };
 
+    let start_ts = Instant::now();
     let (tokens, latency_ms) = match run_and_collect(
         state.engine.as_ref(),
         &body.model_id,
@@ -674,14 +795,25 @@ async fn infer_handler(
     ).await {
         Ok(v)  => v,
         Err(e) => {
+            crate::metrics::CONCURRENT_REQUESTS.dec();
+            crate::metrics::REQUESTS_TOTAL.with_label_values(&["infer", "error"]).inc();
             error!(%e, "inference failed");
             let msg = format!("{{\"error\":\"{e}\"}}\n");
             return (StatusCode::INTERNAL_SERVER_ERROR, cors_headers(), msg).into_response();
         }
     };
+    crate::metrics::CONCURRENT_REQUESTS.dec();
 
     let input_token_count  = (body.prompt.split_whitespace().count() as u32).max(1);
     let output_token_count = (tokens.len() as u32).max(1);
+
+    // ── Record metrics ────────────────────────────────────────────────────────
+    crate::metrics::REQUESTS_TOTAL.with_label_values(&["infer", "ok"]).inc();
+    crate::metrics::INFERENCE_LATENCY_MS
+        .with_label_values(&["infer"])
+        .observe(start_ts.elapsed().as_millis() as f64);
+    crate::metrics::TOKENS_TOTAL.with_label_values(&["input"]).inc_by(input_token_count as u64);
+    crate::metrics::TOKENS_TOTAL.with_label_values(&["output"]).inc_by(output_token_count as u64);
 
     debug!(
         %request_id, model = %body.model_id,
@@ -1245,6 +1377,11 @@ async fn marketplace_request_handler(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.estimated_latency_ms.cmp(&b.estimated_latency_ms))
     });
+
+    // Record bid count metric
+    crate::metrics::BIDS_SERVED_TOTAL
+        .with_label_values(&[&body.model])
+        .inc_by(result.len() as u64);
 
     info!(
         %request_id,
