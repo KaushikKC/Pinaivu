@@ -1,14 +1,15 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { fetchHealth, fetchPeers, isDaemonAvailable, type HealthResponse, type PeersResponse } from '../daemon';
+import { fetchHealth, fetchPeers, isDaemonAvailable, getActiveNodeUrl, type HealthResponse, type PeersResponse } from '../daemon';
 
 export interface NodeStatus {
-  available:  boolean;
-  health:     HealthResponse | null;
-  peers:      PeersResponse | null;
-  latencyMs:  number | null;
+  available:   boolean;
+  health:      HealthResponse | null;
+  peers:       PeersResponse | null;
+  latencyMs:   number | null;
   lastChecked: number;
+  activeUrl:   string;
 }
 
 const POLL_INTERVAL_MS = 10_000;
@@ -20,6 +21,7 @@ export function useNodeStatus(): NodeStatus {
     peers:       null,
     latencyMs:   null,
     lastChecked: 0,
+    activeUrl:   '',
   });
 
   const check = useCallback(async () => {
@@ -40,6 +42,7 @@ export function useNodeStatus(): NodeStatus {
       peers:       peers.status   === 'fulfilled' ? peers.value   : null,
       latencyMs,
       lastChecked: Date.now(),
+      activeUrl:   getActiveNodeUrl(),
     });
   }, []);
 
