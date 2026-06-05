@@ -81,6 +81,8 @@ pub struct ApiState {
     pub max_context_tokens:  u32,
     /// Seen request IDs → expiry timestamp (unix secs). Prevents replay attacks.
     pub seen_ids:            Arc<Mutex<HashMap<uuid::Uuid, u64>>>,
+    /// Append-only NDJSON journal of completed inference jobs for durability.
+    pub job_journal:         Arc<crate::journal::JobJournal>,
 }
 
 // ---------------------------------------------------------------------------
@@ -505,6 +507,9 @@ async fn chat_completions_handler(
 
     let (mut context_window, prompt) = messages_to_context(&body.messages);
 
+    // ── Model fallback resolution ─────────────────────────────────────────────
+    let (actual_model, fallback_notice) = resolve_model(&model, &state.engine).await;
+
     // ── Context window trimming ───────────────────────────────────────────────
     let dropped = trim_context_window(&mut context_window, state.max_context_tokens);
     if dropped > 0 {
@@ -530,7 +535,7 @@ async fn chat_completions_handler(
     let start_ts = Instant::now();
     let (tokens, latency_ms) = match run_and_collect(
         state.engine.as_ref(),
-        &model,
+        &actual_model,
         context_window,
         &prompt,
         max_tok,
@@ -562,7 +567,18 @@ async fn chat_completions_handler(
     crate::metrics::TOKENS_TOTAL.with_label_values(&["input"]).inc_by(input_toks as u64);
     crate::metrics::TOKENS_TOTAL.with_label_values(&["output"]).inc_by(output_toks as u64);
 
-    debug!(%request_id, %model, input_toks, output_toks, latency_ms, "chat completion done");
+    debug!(%request_id, model = %actual_model, input_toks, output_toks, latency_ms, "chat completion done");
+
+    // ── Journal: persist record so coordinator state survives restarts ────────
+    state.job_journal.append(&crate::journal::JobRecord {
+        request_id:    request_id.to_string(),
+        model:         actual_model.clone(),
+        fallback_from: if fallback_notice.is_some() { Some(model.clone()) } else { None },
+        input_tokens:  input_toks,
+        output_tokens: output_toks,
+        latency_ms:    latency_ms.into(),
+        ts:            crate::journal::now_secs(),
+    });
 
     // Persist this turn so SDK callers using session_id get continuity.
     if let Some(ref sid) = body.session_id {
@@ -712,6 +728,38 @@ pub struct InferRequest {
     pub peer_id:              Option<String>,
 }
 
+/// Resolve the model name the client requested to one actually available.
+///
+/// 1. Exact match        → use as-is.
+/// 2. Family match       → strip the `:size` tag and pick the first variant
+///                         Ollama has loaded (e.g. "llama3.1:70b" → "llama3.1:8b").
+/// 3. No match at all    → return the original name and let Ollama produce the
+///                         error (keeps behaviour unchanged for typos etc.).
+///
+/// Returns `(actual_model, fallback_notice)`.
+async fn resolve_model(
+    requested: &str,
+    engine:    &Arc<dyn InferenceEngine>,
+) -> (String, Option<String>) {
+    let available = match engine.list_available_models().await {
+        Ok(v)  => v,
+        Err(_) => return (requested.to_string(), None),
+    };
+
+    if available.iter().any(|m| m == requested) {
+        return (requested.to_string(), None);
+    }
+
+    let family = requested.split(':').next().unwrap_or(requested);
+    if let Some(fallback) = available.iter().find(|m| m.starts_with(family)) {
+        let notice = format!("'{}' not available — routing to '{}'", requested, fallback);
+        info!(requested = %requested, fallback = %fallback, "model fallback");
+        return (fallback.clone(), Some(notice));
+    }
+
+    (requested.to_string(), None)
+}
+
 async fn infer_handler(
     State(state): State<ApiState>,
     headers:      HeaderMap,
@@ -769,6 +817,9 @@ async fn infer_handler(
         debug!(dropped, "context: trimmed oldest messages to fit token budget");
     }
 
+    // ── Model fallback resolution ─────────────────────────────────────────────
+    let (actual_model, fallback_notice) = resolve_model(&body.model_id, &state.engine).await;
+
     // ── Concurrency gate — prevents GPU OOM under parallel requests ───────────
     crate::metrics::CONCURRENT_REQUESTS.inc();
     let _permit = match state.inference_sem.try_acquire() {
@@ -786,7 +837,7 @@ async fn infer_handler(
     let start_ts = Instant::now();
     let (tokens, latency_ms) = match run_and_collect(
         state.engine.as_ref(),
-        &body.model_id,
+        &actual_model,
         context_window,
         &body.prompt,
         body.max_tokens.unwrap_or(2048),
@@ -816,10 +867,21 @@ async fn infer_handler(
     crate::metrics::TOKENS_TOTAL.with_label_values(&["output"]).inc_by(output_token_count as u64);
 
     debug!(
-        %request_id, model = %body.model_id,
+        %request_id, model = %actual_model,
         input_toks = input_token_count, output_toks = output_token_count, latency_ms,
         "inference complete"
     );
+
+    // ── Journal: persist record so coordinator state survives restarts ────────
+    state.job_journal.append(&crate::journal::JobRecord {
+        request_id:    request_id.to_string(),
+        model:         actual_model.clone(),
+        fallback_from: if fallback_notice.is_some() { Some(body.model_id.clone()) } else { None },
+        input_tokens:  input_token_count,
+        output_tokens: output_token_count,
+        latency_ms:    latency_ms.into(),
+        ts:            crate::journal::now_secs(),
+    });
 
     let full_output = tokens.join("");
 
@@ -854,7 +916,7 @@ async fn infer_handler(
         &state,
         body.accepted_settlements.as_deref(),
         request_id,
-        &body.model_id,
+        &actual_model,
         input_token_count,
         output_token_count,
         latency_ms,
@@ -863,7 +925,13 @@ async fn infer_handler(
         full_output.as_bytes(),
     ).await;
 
+    // Include fallback notice in response headers so clients can log it
     let mut response = ndjson_response(ndjson_body(&tokens, receipt));
+    if let Some(ref notice) = fallback_notice {
+        if let Ok(val) = notice.parse() {
+            response.headers_mut().insert("X-Model-Fallback", val);
+        }
+    }
 
     // Attach X-Payment-Response header when x402 was active
     if !x402_payer.is_empty() {
