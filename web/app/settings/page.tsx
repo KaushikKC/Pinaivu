@@ -22,7 +22,7 @@ function loadSavedSettings() {
 
 export default function SettingsPage() {
   const [mode,       setMode]       = useState<Mode>('standalone');
-  const [daemonUrl,  setDaemonUrl]  = useState('http://localhost:4002');
+  const [nodeUrls,   setNodeUrls]   = useState('http://localhost:4002');
   const [bidWindow,  setBidWindow]  = useState('2000');
   const [saved,      setSaved]      = useState(false);
 
@@ -33,14 +33,28 @@ export default function SettingsPage() {
     if (s.mode && ['standalone', 'network', 'network_paid'].includes(s.mode)) {
       setMode(s.mode as Mode);
     }
-    if (s.daemonUrl) setDaemonUrl(s.daemonUrl);
+    // Support both legacy daemonUrl (string) and new nodeUrls (string[])
+    if (s.nodeUrls?.length) {
+      setNodeUrls(s.nodeUrls.join('\n'));
+    } else if (s.daemonUrl) {
+      setNodeUrls(s.daemonUrl);
+    }
     if (s.bidWindowMs) setBidWindow(String(s.bidWindowMs));
   }, []);
 
   function handleSave(e: React.FormEvent) {
     e.preventDefault();
-    // Settings are localStorage-only for now; full config via .toml for the daemon.
-    localStorage.setItem('deai:settings', JSON.stringify({ mode, daemonUrl, bidWindowMs: Number(bidWindow) }));
+    const urls = nodeUrls
+      .split('\n')
+      .map(u => u.trim())
+      .filter(Boolean);
+    const primary = urls[0] ?? 'http://localhost:4002';
+    localStorage.setItem('deai:settings', JSON.stringify({
+      mode,
+      daemonUrl:   primary,
+      nodeUrls:    urls,
+      bidWindowMs: Number(bidWindow),
+    }));
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
@@ -102,14 +116,18 @@ export default function SettingsPage() {
           {/* Daemon */}
           <Section icon={<Cpu className="w-4 h-4" />} title="Local Daemon">
             <div className="space-y-3">
-              <Field label="Daemon URL" hint="Where pinaivu is listening.">
-                <input
-                  type="url"
-                  value={daemonUrl}
-                  onChange={e => setDaemonUrl(e.target.value)}
+              <Field
+                label="Node URLs"
+                hint="One URL per line. The web UI tries each in order and uses the first reachable node. Add multiple URLs for automatic failover across a cluster."
+              >
+                <textarea
+                  rows={3}
+                  value={nodeUrls}
+                  onChange={e => setNodeUrls(e.target.value)}
+                  placeholder={'http://localhost:4002\nhttp://node2:4002\nhttp://node3:4002'}
                   className="w-full rounded-lg border border-surface-3 bg-surface-1 px-3 py-2
                              text-sm text-white placeholder:text-muted outline-none
-                             focus:border-accent/60 transition-colors font-mono"
+                             focus:border-accent/60 transition-colors font-mono resize-none"
                 />
               </Field>
 
