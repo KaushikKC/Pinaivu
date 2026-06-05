@@ -101,6 +101,8 @@ pub struct DeAIDaemon {
     bid_engine:  Arc<BidDecisionEngine>,
     /// Server-side conversation context store (session_id → message history).
     context_store: Arc<dyn ContextStore>,
+    /// Append-only NDJSON journal of completed inference jobs.
+    job_journal: Arc<crate::journal::JobJournal>,
     /// Ed25519 identity keypair — signs every ProofOfInference.
     identity:    Arc<NodeIdentity>,
     /// Present in `network` and `network_paid` modes; `None` in `standalone`.
@@ -484,6 +486,11 @@ impl DeAIDaemon {
             }
         };
 
+        // ── Job journal ───────────────────────────────────────────────────────
+        let journal_dir = expand_tilde(&config.node.data_dir);
+        let job_journal = Arc::new(crate::journal::JobJournal::new(&journal_dir));
+        info!(path = %journal_dir.join("jobs.ndjson").display(), "job journal ready");
+
         // ── Inference engine + scheduler ─────────────────────────────────────
         let engine: Arc<dyn InferenceEngine> =
             Arc::new(OllamaEngine::new(config.inference.ollama_base_url()));
@@ -587,6 +594,7 @@ impl DeAIDaemon {
             storage,
             session_mgr,
             context_store,
+            job_journal,
             payment,
             reputation,
             settlements,
@@ -650,6 +658,11 @@ impl DeAIDaemon {
     /// Returns the blob storage client for use in the API server.
     pub fn storage_client(&self) -> Arc<dyn storage::StorageClient> {
         Arc::clone(&self.storage)
+    }
+
+    /// Returns the job journal for use in the API server.
+    pub fn job_journal(&self) -> Arc<crate::journal::JobJournal> {
+        Arc::clone(&self.job_journal)
     }
 
     // ── Main run loop ─────────────────────────────────────────────────────────
