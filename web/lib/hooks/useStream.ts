@@ -4,6 +4,8 @@ import { useState, useRef, useCallback } from 'react';
 import {
   streamInfer,
   streamChatCompletions,
+  streamInferEncrypted,
+  isRemoteDaemon,
   fetchMarketplaceBids,
   pickBestBid,
   type InferRequest,
@@ -98,22 +100,43 @@ export function useStream(
             }
           }
         } else {
-          // Local path: send full conversation history via /v1/chat/completions
-          // so the model has context of all prior turns.
+          // Local path: send full conversation history so the model has context.
           const allMessages = session.messages
             .filter(m => m.content.trim())
             .slice(0, -1)  // exclude the blank placeholder we just appended
             .map<ChatMessage>(m => ({ role: m.role, content: m.content }));
           allMessages.push({ role: 'user', content: userText });
 
-          for await (const token of streamChatCompletions(allMessages, modelId, {
-            maxTokens: 2048,
-            sessionId: session.id,
-            signal:    controller.signal,
-          })) {
-            accumulated += token;
-            setState(prev => ({ ...prev, streamingText: accumulated }));
-            updateLastAssistantMessage(session.id, accumulated);
+          if (isRemoteDaemon()) {
+            // Remote node (non-P2P direct URL) — use E2E encrypted inference.
+            // Flatten history into a single prompt so the encrypted payload
+            // carries full context without exposing turn structure in plaintext.
+            const prompt = allMessages
+              .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+              .join('\n');
+            const req: InferRequest = {
+              model_id:   modelId,
+              prompt,
+              session_id: session.id,
+              max_tokens: 2048,
+            };
+            for await (const chunk of streamInferEncrypted(req, controller.signal)) {
+              if (typeof chunk === 'string') {
+                accumulated += chunk;
+                setState(prev => ({ ...prev, streamingText: accumulated }));
+                updateLastAssistantMessage(session.id, accumulated);
+              }
+            }
+          } else {
+            for await (const token of streamChatCompletions(allMessages, modelId, {
+              maxTokens: 2048,
+              sessionId: session.id,
+              signal:    controller.signal,
+            })) {
+              accumulated += token;
+              setState(prev => ({ ...prev, streamingText: accumulated }));
+              updateLastAssistantMessage(session.id, accumulated);
+            }
           }
         }
 
