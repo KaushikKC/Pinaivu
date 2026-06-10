@@ -20,8 +20,9 @@ path = "src/main.rs"
 #   cargo run  -p node --features solana -- start
 # ---------------------------------------------------------------------------
 [features]
-solana = ["settlement/solana"]
-redis  = ["context/redis"]
+solana   = ["settlement/solana"]
+redis    = ["context/redis", "persistence/redis"]
+postgres = ["persistence/postgres"]
 
 [dependencies]
 common           = { path = "../common" }
@@ -32,6 +33,7 @@ p2p              = { path = "../p2p" }
 inference        = { path = "../inference" }
 context          = { path = "../context" }
 storage          = { path = "../storage" }
+persistence      = { path = "../persistence" }
 async-trait      = { workspace = true }
 anyhow           = { workspace = true }
 tokio            = { workspace = true }
