@@ -10,6 +10,7 @@ mod health;
 mod identity;
 mod journal;
 mod metrics;
+mod state;
 mod x402;
 
 use clap::Parser as _;
@@ -245,31 +246,10 @@ async fn cmd_start(mut config: NodeConfig) -> anyhow::Result<()> {
     };
     health::start(config.health.metrics_port, health_state).await?;
 
-    // Start inference API server (used by the TS SDK + web UI in standalone mode)
-    let concurrent_slots = config.gpu.concurrent_jobs.max(1);
-    let seen_ids = std::sync::Arc::new(tokio::sync::Mutex::new(
-        std::collections::HashMap::<uuid::Uuid, u64>::new(),
-    ));
-    let api_state = api::ApiState {
-        engine:              daemon.inference_engine(),
-        settlements:         daemon.settlements().to_vec(),
-        identity:            daemon.identity(),
-        version:             env!("CARGO_PKG_VERSION").to_string(),
-        mode:                daemon.mode_str(),
-        peer_registry:       daemon.peer_registry(),
-        bid_collectors:      daemon.bid_collectors(),
-        response_collectors: daemon.response_collectors(),
-        p2p_service:         daemon.p2p_service_cloned(),
-        x402_config:         config.x402.clone(),
-        context_store:       daemon.context_store(),
-        job_journal:         daemon.job_journal(),
-        api_key:             config.api.api_key.clone(),
-        inference_sem:       std::sync::Arc::new(tokio::sync::Semaphore::new(concurrent_slots)),
-        storage:             daemon.storage_client(),
-        max_context_tokens:  config.inference.max_context_length,
-        seen_ids,
-    };
-    api::start(config.health.api_port, api_state).await?;
+    // Start inference API server (used by the TS SDK + web UI in standalone mode).
+    // The API runs on the same shared `NodeState` the daemon assembled — no
+    // hand-wiring of individual handles.
+    api::start(config.health.api_port, daemon.state()).await?;
 
     info!(
         health_port = config.health.metrics_port,
