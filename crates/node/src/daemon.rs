@@ -20,27 +20,15 @@ use common::{
     config::{ContextStoreKind, NodeConfig, OperationMode, ReputationStoreKind},
     payment::{FreePayment, LocalLedger, PaymentBackend},
     types::{
-        ContextWindow, GpuType, InferenceBid, InferenceRequest, Message, NodeCapabilities,
+        ContextWindow, GpuType, InferenceRequest, Message, NodeCapabilities,
         P2PInferenceChunk, Role,
     },
 };
 
-// ---------------------------------------------------------------------------
-// Shared registries exposed to the HTTP API layer
-// ---------------------------------------------------------------------------
-
-/// Peer capabilities indexed by libp2p PeerId string.
-pub type PeerRegistry = Arc<tokio::sync::Mutex<HashMap<String, NodeCapabilities>>>;
-
-/// Per-request bid collection channels.  The HTTP marketplace handler inserts a
-/// sender before broadcasting; the P2P event loop forwards matching bids to it.
-pub type BidCollectors =
-    Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, tokio::sync::mpsc::Sender<InferenceBid>>>>;
-
-/// Per-request P2P inference chunk channels.  The HTTP infer handler inserts a
-/// sender keyed by response_id; the event loop forwards matching chunks to it.
-pub type ResponseCollectors =
-    Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::mpsc::Sender<P2PInferenceChunk>>>>;
+// The shared-state registries and the `NodeState` DI container now live in
+// `state.rs` — the single source of truth shared with the HTTP API layer.
+use crate::state::{now_ms, BidCollectors, NodeState, NodeStateInner, ResponseCollectors};
+use persistence::{InMemoryJobStore, InMemoryPeerStore, JobStore, PeerStore};
 
 use crate::identity::NodeIdentity;
 use reputation::{GossipReputationStore, LocalReputationStore, ReputationStore};
@@ -86,38 +74,19 @@ impl context::session::StorageClient for StorageAdapter {
 // DeAIDaemon
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 pub struct DeAIDaemon {
-    config:      NodeConfig,
-    storage:     Arc<dyn StorageClient>,
-    session_mgr: Arc<SessionManager>,
-    payment:     Arc<dyn PaymentBackend>,
-    reputation:  Arc<dyn ReputationStore>,
-    /// Settlement adapters in preference order. First match with client wins.
-    /// Always contains at least `FreeSettlement` as the last-resort fallback.
-    settlements: Vec<Arc<dyn SettlementAdapter>>,
-    engine:      Arc<dyn InferenceEngine>,
-    scheduler:   Arc<NodeScheduler>,
-    bid_engine:  Arc<BidDecisionEngine>,
-    /// Server-side conversation context store (session_id → message history).
-    context_store: Arc<dyn ContextStore>,
-    /// Append-only NDJSON journal of completed inference jobs.
-    job_journal: Arc<crate::journal::JobJournal>,
-    /// Ed25519 identity keypair — signs every ProofOfInference.
-    identity:    Arc<NodeIdentity>,
-    /// Present in `network` and `network_paid` modes; `None` in `standalone`.
-    p2p:            Option<(P2PService, tokio::sync::mpsc::Receiver<P2PEvent>)>,
+    /// The shared DI container — all service handles + registries live here and
+    /// are handed to the HTTP API layer via `state()`.
+    state: NodeState,
+    /// P2P event receiver, consumed by `run()`. Present in `network` and
+    /// `network_paid` modes; `None` in `standalone`. The matching `P2PService`
+    /// sender handle lives in `state.p2p_service`.
+    p2p_events:  Option<tokio::sync::mpsc::Receiver<P2PEvent>>,
     /// Receives new Merkle roots from `GossipReputationStore`; forwarded to P2P.
     /// `None` when the reputation store is not in gossip mode.
-    rep_root_rx:    Option<tokio::sync::mpsc::Receiver<[u8; 32]>>,
-    /// Known peers — updated whenever a `NodeAnnounceReceived` event arrives.
-    peer_registry:  PeerRegistry,
-    /// Bid collection channels registered by the marketplace HTTP handler.
-    bid_collectors:      BidCollectors,
-    /// P2P inference chunk channels registered by the /v1/infer peer_id handler.
-    response_collectors: ResponseCollectors,
+    rep_root_rx: Option<tokio::sync::mpsc::Receiver<[u8; 32]>>,
     /// Our own capabilities — re-broadcast on every new peer connection.
-    own_caps:       Option<NodeCapabilities>,
+    own_caps:    Option<NodeCapabilities>,
 }
 
 impl DeAIDaemon {
@@ -566,9 +535,26 @@ impl DeAIDaemon {
             }
         };
 
-        let peer_registry:       PeerRegistry       = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        // Split the P2P tuple: the service handle goes into the shared state
+        // (cloned by the API layer); the event receiver is consumed by `run()`.
+        let (p2p_service, p2p_events) = match p2p {
+            Some((svc, events)) => (Some(svc), Some(events)),
+            None                => (None, None),
+        };
+
+        // ── Persistence stores ───────────────────────────────────────────────
+        // In-memory by default (standalone). Redis/Postgres backends are opt-in
+        // via config *and* the matching cargo feature; if the feature is absent
+        // we log and fall back to in-memory, mirroring the context-store pattern.
+        let peer_store  = build_peer_store(&config).await;
+        let job_store   = build_job_store(&config).await;
+
         let bid_collectors:      BidCollectors      = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let response_collectors: ResponseCollectors = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
+        // Concurrency guard for inference calls (≥1 slot).
+        let inference_sem = Arc::new(tokio::sync::Semaphore::new(config.gpu.concurrent_jobs.max(1)));
+        let seen_ids = Arc::new(tokio::sync::Mutex::new(HashMap::<uuid::Uuid, u64>::new()));
 
         // ── ERC-8004 registration ─────────────────────────────────────────────
         // Best-effort: register this node on Arc chain if an Arc EVM adapter is
@@ -589,80 +575,61 @@ impl DeAIDaemon {
             });
         }
 
-        Ok(Self {
-            config,
-            storage,
-            session_mgr,
-            context_store,
-            job_journal,
-            payment,
-            reputation,
-            settlements,
+        let mode_str = format!("{:?}", config.node.mode);
+        let inner = NodeStateInner {
+            version:            env!("CARGO_PKG_VERSION").to_string(),
+            mode:               mode_str,
+            api_key:            config.api.api_key.clone(),
+            x402_config:        config.x402.clone(),
+            max_context_tokens: config.inference.max_context_length,
+            started_at_ms:      now_ms(),
+
             engine: engine_ref,
+            settlements,
+            identity,
+            reputation,
+            storage,
+            context_store,
+            session_mgr,
+            payment,
             scheduler,
             bid_engine,
-            identity,
-            p2p,
-            rep_root_rx,
-            peer_registry,
+            job_journal,
+
+            peer_store,
+            job_store,
             bid_collectors,
             response_collectors,
+
+            p2p_service,
+            inference_sem,
+            seen_ids,
+
+            config,
+        };
+
+        Ok(Self {
+            state: NodeState::new(inner),
+            p2p_events,
+            rep_root_rx,
             own_caps,
         })
     }
 
-    // ── Public accessors for health / API servers ────────────────────────────
+    /// The shared DI container — handed to the HTTP API + health servers.
+    pub fn state(&self) -> NodeState {
+        self.state.clone()
+    }
+
+    // ── Thin accessors still needed by the health server ─────────────────────
+    // Everything else now flows through `state()`.
 
     pub fn p2p_service(&self) -> Option<Arc<P2PService>> {
-        self.p2p.as_ref().map(|(svc, _)| Arc::new(svc.clone()))
+        self.state.p2p_service.as_ref().map(|svc| Arc::new(svc.clone()))
     }
 
     pub fn mode_str(&self) -> String {
-        format!("{:?}", self.config.node.mode)
-    }
-
-    /// Returns the node identity keypair (for signing proofs in the API server).
-    pub fn identity(&self) -> Arc<NodeIdentity> {
-        Arc::clone(&self.identity)
-    }
-
-    /// Returns the inference engine for the API server.
-    pub fn inference_engine(&self) -> Arc<dyn InferenceEngine> {
-        Arc::clone(&self.engine)
-    }
-
-    /// Returns the active settlement adapters (for job dispatch and bid matching).
-    pub fn settlements(&self) -> &[Arc<dyn SettlementAdapter>] {
-        &self.settlements
-    }
-
-    /// Cloned `PeerRegistry` — shared with the HTTP API server.
-    pub fn peer_registry(&self) -> PeerRegistry { Arc::clone(&self.peer_registry) }
-
-    /// Cloned `BidCollectors` — shared with the HTTP API server.
-    pub fn bid_collectors(&self) -> BidCollectors { Arc::clone(&self.bid_collectors) }
-
-    /// Cloned `ResponseCollectors` — shared with the HTTP API server.
-    pub fn response_collectors(&self) -> ResponseCollectors { Arc::clone(&self.response_collectors) }
-
-    /// Returns a cloned `P2PService` handle for use in the HTTP API server.
-    pub fn p2p_service_cloned(&self) -> Option<P2PService> {
-        self.p2p.as_ref().map(|(svc, _)| svc.clone())
-    }
-
-    /// Returns the conversation context store for use in the API server.
-    pub fn context_store(&self) -> Arc<dyn ContextStore> {
-        Arc::clone(&self.context_store)
-    }
-
-    /// Returns the blob storage client for use in the API server.
-    pub fn storage_client(&self) -> Arc<dyn storage::StorageClient> {
-        Arc::clone(&self.storage)
-    }
-
-    /// Returns the job journal for use in the API server.
-    pub fn job_journal(&self) -> Arc<crate::journal::JobJournal> {
-        Arc::clone(&self.job_journal)
+        self.state.mode.clone()
     }
 
     // ── Main run loop ─────────────────────────────────────────────────────────
@@ -671,8 +638,13 @@ impl DeAIDaemon {
     pub async fn run(mut self) -> anyhow::Result<()> {
         info!("daemon running — press Ctrl-C to stop");
 
-        if let Some((svc, mut events)) = self.p2p.take() {
-            // Network mode: handle P2P events.
+        // `p2p_events` is `Some` exactly when `state.p2p_service` is `Some`.
+        if let Some(mut events) = self.p2p_events.take() {
+            let svc = self
+                .state
+                .p2p_service
+                .clone()
+                .expect("p2p_service set whenever p2p_events is set");
 
             // Phase G: if we have a rep_root_rx, spawn a background task that
             // forwards Merkle roots from the GossipReputationStore to the P2P layer.
@@ -697,19 +669,10 @@ impl DeAIDaemon {
                 });
             }
 
-            let bid_engine          = Arc::clone(&self.bid_engine);
-            let scheduler           = Arc::clone(&self.scheduler);
-            let payment             = Arc::clone(&self.payment);
-            let peer_registry       = Arc::clone(&self.peer_registry);
-            let bid_collectors      = Arc::clone(&self.bid_collectors);
-            let response_collectors = Arc::clone(&self.response_collectors);
-            let engine              = Arc::clone(&self.engine);
-
+            let state    = self.state.clone();
             let own_caps = self.own_caps.take().expect("own_caps set in network mode");
             tokio::select! {
-                _ = event_loop(svc, &mut events, bid_engine, scheduler, payment,
-                               peer_registry, bid_collectors, response_collectors,
-                               engine, own_caps) => {}
+                _ = event_loop(state, svc, &mut events, own_caps) => {}
                 _ = tokio::signal::ctrl_c() => {
                     info!("shutdown signal received");
                 }
@@ -737,17 +700,20 @@ impl DeAIDaemon {
 /// - `NodeAnnounceReceived`     → insert into peer registry
 /// - `PeerConnected/Disconnected` → log
 async fn event_loop(
-    svc:                 P2PService,
-    events:              &mut tokio::sync::mpsc::Receiver<P2PEvent>,
-    bid_engine:          Arc<BidDecisionEngine>,
-    scheduler:           Arc<NodeScheduler>,
-    payment:             Arc<dyn PaymentBackend>,
-    peer_registry:       PeerRegistry,
-    bid_collectors:      BidCollectors,
-    response_collectors: ResponseCollectors,
-    engine:              Arc<dyn InferenceEngine>,
-    _own_caps:           NodeCapabilities,
+    state:     NodeState,
+    svc:       P2PService,
+    events:    &mut tokio::sync::mpsc::Receiver<P2PEvent>,
+    _own_caps: NodeCapabilities,
 ) {
+    // Pull the handles the loop needs out of the shared container once.
+    let bid_engine          = Arc::clone(&state.bid_engine);
+    let scheduler           = Arc::clone(&state.scheduler);
+    let payment             = Arc::clone(&state.payment);
+    let peer_store          = Arc::clone(&state.peer_store);
+    let bid_collectors      = Arc::clone(&state.bid_collectors);
+    let response_collectors = Arc::clone(&state.response_collectors);
+    let engine              = Arc::clone(&state.engine);
+
     while let Some(event) = events.recv().await {
         match event {
             P2PEvent::InferenceRequestReceived(req) => {
@@ -797,7 +763,7 @@ async fn event_loop(
                     models  = ?caps.models,
                     "node announcement received — updating peer registry"
                 );
-                peer_registry.lock().await.insert(caps.peer_id.clone(), caps);
+                peer_store.upsert(caps).await;
             }
 
             P2PEvent::PeerConnected(peer_id) => {
@@ -992,6 +958,72 @@ fn dirs_home() -> Option<String> {
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .ok()
+}
+
+// ---------------------------------------------------------------------------
+// Persistence backend assembly
+//
+// Each backend is selected by config but only available when the matching cargo
+// feature is compiled in. A requested-but-unavailable backend logs a warning
+// and falls back to the in-memory store, so the default build always works.
+// ---------------------------------------------------------------------------
+
+async fn build_peer_store(config: &NodeConfig) -> Arc<dyn PeerStore> {
+    use common::config::PeerStoreKind;
+    let ttl_ms = config.persistence.peer_ttl_secs.saturating_mul(1000);
+
+    match config.persistence.peer_store {
+        PeerStoreKind::Redis => {
+            #[cfg(feature = "redis")]
+            {
+                match persistence::RedisPeerStore::connect(
+                    &config.persistence.redis_url,
+                    config.persistence.peer_ttl_secs,
+                ).await {
+                    Ok(s) => {
+                        info!(url = %config.persistence.redis_url, "peer store: redis (shared registry)");
+                        return s;
+                    }
+                    Err(e) => warn!(%e, "peer store: redis connect failed — falling back to in-memory"),
+                }
+            }
+            #[cfg(not(feature = "redis"))]
+            warn!("peer store: redis requested but binary not built with --features redis — using in-memory");
+
+            InMemoryPeerStore::new(ttl_ms)
+        }
+        PeerStoreKind::Memory => {
+            info!(ttl_secs = config.persistence.peer_ttl_secs, "peer store: in-memory (TTL-evicting)");
+            InMemoryPeerStore::new(ttl_ms)
+        }
+    }
+}
+
+async fn build_job_store(config: &NodeConfig) -> Arc<dyn JobStore> {
+    use common::config::JobStoreKind;
+
+    match config.persistence.job_store {
+        JobStoreKind::Postgres => {
+            #[cfg(feature = "postgres")]
+            {
+                match persistence::PostgresJobStore::connect(&config.persistence.database_url).await {
+                    Ok(s) => {
+                        info!("job store: postgres (crash-safe queue)");
+                        return s;
+                    }
+                    Err(e) => warn!(%e, "job store: postgres connect failed — falling back to in-memory"),
+                }
+            }
+            #[cfg(not(feature = "postgres"))]
+            warn!("job store: postgres requested but binary not built with --features postgres — using in-memory");
+
+            InMemoryJobStore::new()
+        }
+        JobStoreKind::Memory => {
+            info!("job store: in-memory");
+            InMemoryJobStore::new()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
