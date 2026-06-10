@@ -19,6 +19,7 @@ pub struct NodeConfig {
     pub settlement: SettlementSection,
     pub x402:       X402Section,
     pub api:        ApiSection,
+    pub persistence: PersistenceSection,
 }
 
 impl Default for NodeConfig {
@@ -39,6 +40,7 @@ impl Default for NodeConfig {
             settlement: SettlementSection::default(),
             x402:       X402Section::default(),
             api:        ApiSection::default(),
+            persistence: PersistenceSection::default(),
         }
     }
 }
@@ -494,6 +496,64 @@ impl Default for SettlementSection {
                 token_id: "native".into(),
                 ..Default::default()
             }],
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Persistence section — shared peer registry + job queue backends
+// ---------------------------------------------------------------------------
+
+/// Which backend holds the live peer registry built from gossip announcements.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerStoreKind {
+    /// In-process map with TTL eviction. Lost on restart; single replica only.
+    #[default]
+    Memory,
+    /// Redis keys with EXPIRE. Shared across node replicas. Requires the
+    /// binary to be built with `--features redis`.
+    Redis,
+}
+
+/// Which backend tracks dispatched inference jobs (the deadline-watcher queue).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum JobStoreKind {
+    /// In-process map. Lost on restart; single replica only.
+    #[default]
+    Memory,
+    /// Postgres table. Crash-safe and shared across replicas. Requires the
+    /// binary to be built with `--features postgres`.
+    Postgres,
+}
+
+/// Durable persistence backends. Defaults keep today's single-process,
+/// in-memory behaviour; pointing these at Redis/Postgres unblocks running
+/// several node replicas that share one registry and one job queue.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PersistenceSection {
+    /// "memory" | "redis"
+    pub peer_store:     PeerStoreKind,
+    /// "memory" | "postgres"
+    pub job_store:      JobStoreKind,
+    /// Redis URL for the peer registry when `peer_store = "redis"`.
+    pub redis_url:      String,
+    /// Postgres URL for the job queue when `job_store = "postgres"`.
+    pub database_url:   String,
+    /// Peer entry TTL in seconds (re-announce window). Default 600 (10 min).
+    pub peer_ttl_secs:  u64,
+}
+
+impl Default for PersistenceSection {
+    fn default() -> Self {
+        Self {
+            peer_store:    PeerStoreKind::Memory,
+            job_store:     JobStoreKind::Memory,
+            redis_url:     "redis://127.0.0.1:6379".into(),
+            database_url:  "postgres://localhost/deai".into(),
+            peer_ttl_secs: 600,
         }
     }
 }
