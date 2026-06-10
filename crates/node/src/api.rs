@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Mutex;
 
 use aes_gcm::{
     Aes256Gcm, Key, Nonce,
@@ -40,50 +40,19 @@ use common::types::{
     PrivacyLevel, ProofOfInference, RequestId, Role,
 };
 use inference::{InferenceEngine, InferenceParams};
-use p2p::P2PService;
 use settlement::{EscrowParams, SettlementAdapter, select_adapter};
 
-use crate::daemon::{BidCollectors, PeerRegistry, ResponseCollectors};
 use crate::identity::NodeIdentity;
-use context::store::{ContextStore, StoredMessage};
+use context::store::StoredMessage;
 
 // ---------------------------------------------------------------------------
 // Shared state
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
-pub struct ApiState {
-    pub engine:         Arc<dyn InferenceEngine>,
-    pub settlements:    Vec<Arc<dyn SettlementAdapter>>,
-    pub identity:       Arc<NodeIdentity>,
-    pub version:        String,
-    pub mode:           String,
-    /// Known peers from gossip announcements.
-    pub peer_registry:  PeerRegistry,
-    /// Channels waiting for bids from broadcast inference requests.
-    pub bid_collectors:      BidCollectors,
-    /// Channels waiting for P2P inference chunks keyed by response_id.
-    pub response_collectors: ResponseCollectors,
-    /// P2P service handle — `None` in standalone mode.
-    pub p2p_service:    Option<P2PService>,
-    /// x402 payment gate configuration.
-    pub x402_config:    common::config::X402Section,
-    /// Server-side conversation context store (session_id → message history).
-    pub context_store:  Arc<dyn ContextStore>,
-    /// Shared secret for API key authentication. Empty → auth disabled.
-    pub api_key:        String,
-    /// Limits concurrent Ollama calls to prevent GPU OOM / starvation.
-    pub inference_sem:       Arc<Semaphore>,
-    /// Blob storage backend — writes inference outputs after completion.
-    pub storage:             Arc<dyn storage::StorageClient>,
-    /// Maximum token budget for the context window sent to the model.
-    /// Messages are trimmed oldest-first when the estimate exceeds this.
-    pub max_context_tokens:  u32,
-    /// Seen request IDs → expiry timestamp (unix secs). Prevents replay attacks.
-    pub seen_ids:            Arc<Mutex<HashMap<uuid::Uuid, u64>>>,
-    /// Append-only NDJSON journal of completed inference jobs for durability.
-    pub job_journal:         Arc<crate::journal::JobJournal>,
-}
+/// The HTTP API runs on the same shared DI container as the daemon's P2P event
+/// loop. Handlers access service handles via `state.engine`, `state.settlements`,
+/// `state.peer_registry`, … through `NodeState`'s `Deref` impl.
+pub type ApiState = crate::state::NodeState;
 
 // ---------------------------------------------------------------------------
 // API key authentication
@@ -1319,10 +1288,7 @@ async fn models_handler(State(state): State<ApiState>) -> impl IntoResponse {
 // ---------------------------------------------------------------------------
 
 async fn peers_handler(State(state): State<ApiState>) -> impl IntoResponse {
-    let peers: Vec<NodeCapabilities> = state.peer_registry.lock().await
-        .values()
-        .cloned()
-        .collect();
+    let peers: Vec<NodeCapabilities> = state.peer_store.all().await;
     (StatusCode::OK, cors_headers(), Json(peers))
 }
 
@@ -1419,10 +1385,18 @@ async fn marketplace_request_handler(
     // Clean up the collector.
     state.bid_collectors.lock().await.remove(&request_id);
 
-    // Enrich bids with api_url from the peer registry.
-    let registry = state.peer_registry.lock().await;
+    // Enrich bids with api_url from the peer registry. Snapshot the registry
+    // once into a peer_id → api_url map (the store API is async, so we can't
+    // look up inside the sync `map` closure below).
+    let api_urls: HashMap<String, Option<String>> = state
+        .peer_store
+        .all()
+        .await
+        .into_iter()
+        .map(|c| (c.peer_id.clone(), c.api_url.clone()))
+        .collect();
     let mut result: Vec<BidResponse> = bids.iter().map(|bid| {
-        let api_url = registry.get(&bid.node_peer_id).and_then(|c| c.api_url.clone());
+        let api_url = api_urls.get(&bid.node_peer_id).cloned().flatten();
         BidResponse {
             node_peer_id:         bid.node_peer_id.clone(),
             api_url,
@@ -1437,7 +1411,6 @@ async fn marketplace_request_handler(
             }).collect(),
         }
     }).collect();
-    drop(registry);
 
     // Sort: reputation desc, latency asc.
     result.sort_by(|a, b| {
