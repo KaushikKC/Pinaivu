@@ -1,0 +1,30 @@
+[package]
+name = "persistence"
+version = "0.1.0"
+edition = "2021"
+
+# Shared persistence layer: trait-based stores for the peer registry and the
+# inference-job queue. In-memory implementations are always available and are
+# the default for `standalone` mode. Redis (peer registry) and Postgres (job
+# queue) backends are opt-in via features so the default build pulls neither.
+
+[features]
+default = []
+redis    = ["dep:redis"]
+postgres = ["dep:sqlx"]
+
+[dependencies]
+common      = { path = "../common" }
+async-trait = { workspace = true }
+anyhow      = { workspace = true }
+tokio       = { workspace = true }
+tracing     = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+uuid        = { workspace = true }
+
+redis = { version = "0.26", features = ["tokio-comp", "connection-manager"], optional = true }
+sqlx  = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid"], optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

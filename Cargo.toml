@@ -10,6 +10,7 @@ members = [
   "crates/common",
   "crates/reputation",
   "crates/settlement",
+  "crates/persistence",
 ]
 # programs/pinaivu (Anchor/Solana program) excluded from workspace — Anchor's
 # solana-program dep pulls curve25519-dalek v3 which conflicts with libp2p's
