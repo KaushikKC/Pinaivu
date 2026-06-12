@@ -637,8 +637,8 @@ impl DeAIDaemon {
 
     // ── Main run loop ─────────────────────────────────────────────────────────
 
-    /// Run until a shutdown signal arrives (Ctrl-C).
-    pub async fn run(mut self) -> anyhow::Result<()> {
+    /// Run until the shared shutdown signal fires.
+    pub async fn run(mut self, shutdown: crate::shutdown::ShutdownRx) -> anyhow::Result<()> {
         info!("daemon running — press Ctrl-C to stop");
 
         // `p2p_events` is `Some` exactly when `state.p2p_service` is `Some`.
@@ -676,14 +676,14 @@ impl DeAIDaemon {
             let own_caps = self.own_caps.take().expect("own_caps set in network mode");
             tokio::select! {
                 _ = event_loop(state, svc, &mut events, own_caps) => {}
-                _ = tokio::signal::ctrl_c() => {
-                    info!("shutdown signal received");
+                _ = crate::shutdown::wait(shutdown) => {
+                    info!("daemon: shutdown signalled");
                 }
             }
         } else {
-            // Standalone mode: just wait for Ctrl-C
-            tokio::signal::ctrl_c().await?;
-            info!("shutdown signal received");
+            // Standalone mode: just wait for the shutdown signal.
+            crate::shutdown::wait(shutdown).await;
+            info!("daemon: shutdown signalled");
         }
 
         info!("daemon stopped");

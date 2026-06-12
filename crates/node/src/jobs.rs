@@ -44,9 +44,13 @@ impl WatcherConfig {
     }
 }
 
-/// Spawn the deadline watcher on a background tokio task. The handle can be kept
-/// to abort it on shutdown; dropping it lets the loop run for the process life.
-pub fn spawn_deadline_watcher(state: NodeState, cfg: WatcherConfig) -> tokio::task::JoinHandle<()> {
+/// Spawn the deadline watcher on a background tokio task. It sweeps until the
+/// shared shutdown signal fires, then exits cleanly.
+pub fn spawn_deadline_watcher(
+    state: NodeState,
+    cfg: WatcherConfig,
+    shutdown: crate::shutdown::ShutdownRx,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         info!(
             poll_secs = cfg.poll_interval.as_secs(),
@@ -56,9 +60,16 @@ pub fn spawn_deadline_watcher(state: NodeState, cfg: WatcherConfig) -> tokio::ta
         // Skip missed ticks rather than bursting if a sweep runs long.
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            ticker.tick().await;
-            if let Err(e) = sweep(&state.job_store, &state.peer_store).await {
-                warn!(%e, "job watcher: sweep failed");
+            tokio::select! {
+                _ = ticker.tick() => {
+                    if let Err(e) = sweep(&state.job_store, &state.peer_store).await {
+                        warn!(%e, "job watcher: sweep failed");
+                    }
+                }
+                _ = crate::shutdown::wait(shutdown.clone()) => {
+                    info!("job deadline-watcher stopped");
+                    break;
+                }
             }
         }
     })
