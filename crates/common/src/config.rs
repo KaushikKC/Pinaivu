@@ -544,16 +544,23 @@ pub struct PersistenceSection {
     pub database_url:   String,
     /// Peer entry TTL in seconds (re-announce window). Default 600 (10 min).
     pub peer_ttl_secs:  u64,
+    /// Deadline for a dispatched inference job. The watcher compensates jobs
+    /// still unfinished past this. Default 120 s.
+    pub job_timeout_secs: u64,
+    /// How often the deadline-watcher sweeps for overdue jobs. Default 10 s.
+    pub job_poll_secs:    u64,
 }
 
 impl Default for PersistenceSection {
     fn default() -> Self {
         Self {
-            peer_store:    PeerStoreKind::Memory,
-            job_store:     JobStoreKind::Memory,
-            redis_url:     "redis://127.0.0.1:6379".into(),
-            database_url:  "postgres://localhost/deai".into(),
-            peer_ttl_secs: 600,
+            peer_store:       PeerStoreKind::Memory,
+            job_store:        JobStoreKind::Memory,
+            redis_url:        "redis://127.0.0.1:6379".into(),
+            database_url:     "postgres://localhost/deai".into(),
+            peer_ttl_secs:    600,
+            job_timeout_secs: 120,
+            job_poll_secs:    10,
         }
     }
 }
