@@ -44,6 +44,7 @@ use settlement::{EscrowParams, SettlementAdapter, select_adapter};
 
 use crate::identity::NodeIdentity;
 use context::store::StoredMessage;
+use persistence::{JobMetrics, JobRecord, JobStatus};
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -501,6 +502,13 @@ async fn chat_completions_handler(
         }
     };
 
+    // Track this inference in the job queue so the deadline-watcher can
+    // compensate it if it never completes (crash / hang).
+    state.job_store
+        .push(JobRecord::dispatched(request_id, actual_model.clone(), None, state.job_timeout_ms))
+        .await
+        .ok();
+
     let start_ts = Instant::now();
     let (tokens, latency_ms) = match run_and_collect(
         state.engine.as_ref(),
@@ -515,6 +523,8 @@ async fn chat_completions_handler(
         Err(e) => {
             crate::metrics::CONCURRENT_REQUESTS.dec();
             crate::metrics::REQUESTS_TOTAL.with_label_values(&["chat", "error"]).inc();
+            state.job_store.mark(request_id, JobStatus::Failed).await.ok();
+            crate::metrics::JOBS_TOTAL.with_label_values(&["failed"]).inc();
             error!(%e, "chat completions inference failed");
             let err = serde_json::json!({
                 "error": { "message": e.to_string(), "type": "internal_error" }
@@ -548,6 +558,15 @@ async fn chat_completions_handler(
         latency_ms:    latency_ms.into(),
         ts:            crate::journal::now_secs(),
     });
+
+    // ── Job queue: mark the tracked job completed ─────────────────────────────
+    state.job_store.complete(request_id, JobMetrics {
+        input_tokens:  input_toks,
+        output_tokens: output_toks,
+        latency_ms:    latency_ms.into(),
+        fallback_from: if fallback_notice.is_some() { Some(model.clone()) } else { None },
+    }).await.ok();
+    crate::metrics::JOBS_TOTAL.with_label_values(&["completed"]).inc();
 
     // Persist this turn so SDK callers using session_id get continuity.
     if let Some(ref sid) = body.session_id {
@@ -803,6 +822,12 @@ async fn infer_handler(
         }
     };
 
+    // Track this inference in the job queue (see chat handler).
+    state.job_store
+        .push(JobRecord::dispatched(request_id, actual_model.clone(), None, state.job_timeout_ms))
+        .await
+        .ok();
+
     let start_ts = Instant::now();
     let (tokens, latency_ms) = match run_and_collect(
         state.engine.as_ref(),
@@ -817,6 +842,8 @@ async fn infer_handler(
         Err(e) => {
             crate::metrics::CONCURRENT_REQUESTS.dec();
             crate::metrics::REQUESTS_TOTAL.with_label_values(&["infer", "error"]).inc();
+            state.job_store.mark(request_id, JobStatus::Failed).await.ok();
+            crate::metrics::JOBS_TOTAL.with_label_values(&["failed"]).inc();
             error!(%e, "inference failed");
             let msg = format!("{{\"error\":\"{e}\"}}\n");
             return (StatusCode::INTERNAL_SERVER_ERROR, cors_headers(), msg).into_response();
@@ -851,6 +878,15 @@ async fn infer_handler(
         latency_ms:    latency_ms.into(),
         ts:            crate::journal::now_secs(),
     });
+
+    // ── Job queue: mark the tracked job completed ─────────────────────────────
+    state.job_store.complete(request_id, JobMetrics {
+        input_tokens:  input_token_count,
+        output_tokens: output_token_count,
+        latency_ms:    latency_ms.into(),
+        fallback_from: if fallback_notice.is_some() { Some(body.model_id.clone()) } else { None },
+    }).await.ok();
+    crate::metrics::JOBS_TOTAL.with_label_values(&["completed"]).inc();
 
     let full_output = tokens.join("");
 
