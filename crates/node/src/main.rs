@@ -11,6 +11,7 @@ mod identity;
 mod jobs;
 mod journal;
 mod metrics;
+mod shutdown;
 mod state;
 mod x402;
 
@@ -239,26 +240,43 @@ async fn cmd_start(mut config: NodeConfig) -> anyhow::Result<()> {
     // Assemble daemon
     let daemon = daemon::DeAIDaemon::from_config(config.clone()).await?;
 
-    // Start health/metrics server
+    // ── Shutdown coordination ─────────────────────────────────────────────────
+    // One signal drives every long-lived task. A Ctrl-C listener flips it; the
+    // servers, daemon loop and watcher all drain off the same receiver.
+    let (shutdown_tx, shutdown_rx) = shutdown::channel();
+    tokio::spawn({
+        let tx = shutdown_tx.clone();
+        async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                info!("Ctrl-C received — initiating graceful shutdown");
+                let _ = tx.send(true);
+            }
+        }
+    });
+
+    // Start health/metrics server (liveness + metrics)
     let health_state = health::HealthState {
         p2p:          daemon.p2p_service(),
         node_version: env!("CARGO_PKG_VERSION").to_string(),
         mode:         daemon.mode_str(),
     };
-    health::start(config.health.metrics_port, health_state).await?;
+    let health_handle =
+        health::start(config.health.metrics_port, health_state, shutdown_rx.clone()).await?;
 
     // Spawn the deadline-watcher: tracks dispatched inference jobs and runs a
     // compensating action on any that miss their deadline (also evicts stale
-    // peers each sweep). Runs for the life of the process.
+    // peers each sweep). Stops on the shutdown signal.
     jobs::spawn_deadline_watcher(
         daemon.state(),
         jobs::WatcherConfig::from_secs(config.persistence.job_poll_secs),
+        shutdown_rx.clone(),
     );
 
     // Start inference API server (used by the TS SDK + web UI in standalone mode).
     // The API runs on the same shared `NodeState` the daemon assembled — no
     // hand-wiring of individual handles.
-    api::start(config.health.api_port, daemon.state()).await?;
+    let api_handle =
+        api::start(config.health.api_port, daemon.state(), shutdown_rx.clone()).await?;
 
     info!(
         health_port = config.health.metrics_port,
@@ -268,8 +286,20 @@ async fn cmd_start(mut config: NodeConfig) -> anyhow::Result<()> {
         config.health.api_port,
     );
 
-    // Run until shutdown
-    daemon.run().await
+    // Run the daemon event loop until shutdown is signalled.
+    daemon.run(shutdown_rx).await?;
+
+    // ── Graceful drain ────────────────────────────────────────────────────────
+    // Give the HTTP servers a bounded window to finish in-flight requests.
+    info!("draining HTTP servers (up to 10s)…");
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        async {
+            let _ = tokio::join!(health_handle, api_handle);
+        },
+    ).await;
+    info!("shutdown complete");
+    Ok(())
 }
 
 async fn cmd_models(_config: &NodeConfig) -> anyhow::Result<()> {
