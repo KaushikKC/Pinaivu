@@ -98,10 +98,20 @@ async fn metrics_handler() -> impl IntoResponse {
 
 /// Start the health/metrics HTTP server on the given port.
 ///
-/// Runs in a background task — returns immediately.
-pub async fn start(port: u16, state: HealthState) -> anyhow::Result<()> {
+/// `/health` (and its `/livez` alias) is the **liveness** probe — the process
+/// is up. Readiness, i.e. whether the node can actually serve inference, lives
+/// on the API server's `/ready`, which has access to the inference engine.
+///
+/// Runs in a background task and returns its `JoinHandle` so `main` can await a
+/// graceful drain on shutdown.
+pub async fn start(
+    port: u16,
+    state: HealthState,
+    shutdown: crate::shutdown::ShutdownRx,
+) -> anyhow::Result<tokio::task::JoinHandle<()>> {
     let app = Router::new()
         .route("/health",  get(health_handler))
+        .route("/livez",   get(health_handler))
         .route("/peers",   get(peers_handler))
         .route("/metrics", get(metrics_handler))
         .with_state(state);
@@ -109,11 +119,14 @@ pub async fn start(port: u16, state: HealthState) -> anyhow::Result<()> {
     let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     info!(port, "health/metrics server listening");
 
-    tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
+    let handle = tokio::spawn(async move {
+        let serve = axum::serve(listener, app)
+            .with_graceful_shutdown(crate::shutdown::wait(shutdown));
+        if let Err(e) = serve.await {
             tracing::error!(%e, "health server error");
         }
+        info!("health/metrics server stopped");
     });
 
-    Ok(())
+    Ok(handle)
 }
