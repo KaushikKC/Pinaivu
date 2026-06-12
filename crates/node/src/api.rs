@@ -1477,10 +1477,44 @@ async fn health_handler(State(state): State<ApiState>) -> impl IntoResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Readiness
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct ReadyResponse {
+    ready:  bool,
+    models: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+/// Readiness probe: the node is ready only when its inference engine is
+/// reachable. Returns 200 when ready, 503 otherwise — so a load balancer or
+/// orchestrator stops routing traffic to a node whose backend (Ollama) is down.
+async fn ready_handler(State(state): State<ApiState>) -> impl IntoResponse {
+    match state.engine.list_available_models().await {
+        Ok(models) => (
+            StatusCode::OK,
+            cors_headers(),
+            Json(ReadyResponse { ready: true, models: models.len(), reason: None }),
+        ),
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            cors_headers(),
+            Json(ReadyResponse { ready: false, models: 0, reason: Some(e.to_string()) }),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Server startup
 // ---------------------------------------------------------------------------
 
-pub async fn start(port: u16, state: ApiState) -> anyhow::Result<()> {
+pub async fn start(
+    port: u16,
+    state: ApiState,
+    shutdown: crate::shutdown::ShutdownRx,
+) -> anyhow::Result<tokio::task::JoinHandle<()>> {
     let app = Router::new()
         // OpenAI-compatible
         .route("/v1/chat/completions",    post(chat_completions_handler))
@@ -1500,19 +1534,24 @@ pub async fn start(port: u16, state: ApiState) -> anyhow::Result<()> {
         .route("/v1/peers",              options(preflight))
         .route("/v1/marketplace/request", post(marketplace_request_handler))
         .route("/v1/marketplace/request", options(preflight))
-        // Health
+        // Health (liveness) + readiness
         .route("/health",                get(health_handler))
         .route("/health",                options(preflight))
+        .route("/ready",                 get(ready_handler))
+        .route("/ready",                 options(preflight))
         .with_state(state);
 
     let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     info!(port, "inference API server listening");
 
-    tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
+    let handle = tokio::spawn(async move {
+        let serve = axum::serve(listener, app)
+            .with_graceful_shutdown(crate::shutdown::wait(shutdown));
+        if let Err(e) = serve.await {
             error!(%e, "api server error");
         }
+        info!("inference API server stopped");
     });
 
-    Ok(())
+    Ok(handle)
 }
