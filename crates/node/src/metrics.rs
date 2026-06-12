@@ -118,6 +118,21 @@ pub static REPLAY_REJECTED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     c
 });
 
+/// Inference jobs by terminal outcome, as tracked in the job queue:
+/// "completed" (success), "timed_out" (deadline elapsed), "failed"
+/// (compensating action ran). Driven by the handlers + deadline watcher.
+pub static JOBS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new("deai_jobs_total", "Inference jobs by terminal outcome"),
+        &["outcome"],
+    )
+    .and_then(|c| {
+        prometheus::register(Box::new(c.clone()))?;
+        Ok(c)
+    })
+    .expect("register deai_jobs_total")
+});
+
 // ---------------------------------------------------------------------------
 // Gather helper
 // ---------------------------------------------------------------------------
@@ -133,6 +148,7 @@ pub fn gather_text() -> String {
     let _ = &*SETTLEMENT_NANOX_TOTAL;
     let _ = &*CONTEXT_TRIMS_TOTAL;
     let _ = &*REPLAY_REJECTED_TOTAL;
+    let _ = &*JOBS_TOTAL;
 
     let encoder = TextEncoder::new();
     let families = prometheus::gather();
