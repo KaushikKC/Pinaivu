@@ -8,6 +8,7 @@ mod daemon;
 mod erc8004;
 mod health;
 mod identity;
+mod jobs;
 mod journal;
 mod metrics;
 mod state;
@@ -245,6 +246,14 @@ async fn cmd_start(mut config: NodeConfig) -> anyhow::Result<()> {
         mode:         daemon.mode_str(),
     };
     health::start(config.health.metrics_port, health_state).await?;
+
+    // Spawn the deadline-watcher: tracks dispatched inference jobs and runs a
+    // compensating action on any that miss their deadline (also evicts stale
+    // peers each sweep). Runs for the life of the process.
+    jobs::spawn_deadline_watcher(
+        daemon.state(),
+        jobs::WatcherConfig::from_secs(config.persistence.job_poll_secs),
+    );
 
     // Start inference API server (used by the TS SDK + web UI in standalone mode).
     // The API runs on the same shared `NodeState` the daemon assembled — no
