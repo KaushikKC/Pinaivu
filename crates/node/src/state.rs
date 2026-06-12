@@ -24,7 +24,7 @@ use context::session::SessionManager;
 use context::store::ContextStore;
 use inference::{bid::BidDecisionEngine, scheduler::NodeScheduler, InferenceEngine};
 use p2p::P2PService;
-use persistence::{JobStore, PeerStore};
+use persistence::{JobStore, NonceStore, PeerStore};
 use reputation::ReputationStore;
 use settlement::SettlementAdapter;
 use storage::StorageClient;
@@ -107,8 +107,8 @@ pub struct NodeStateInner {
     pub p2p_service:   Option<P2PService>,
     /// Limits concurrent inference calls to prevent GPU OOM / starvation.
     pub inference_sem: Arc<Semaphore>,
-    /// Seen request IDs → expiry timestamp (unix secs). Prevents replay attacks.
-    pub seen_ids:      Arc<Mutex<HashMap<uuid::Uuid, u64>>>,
+    /// Replay-protection store (in-memory by default; Redis when shared).
+    pub nonce_store:   Arc<dyn NonceStore>,
 }
 
 impl NodeState {
