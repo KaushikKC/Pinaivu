@@ -582,6 +582,7 @@ impl DeAIDaemon {
             api_key:            config.api.api_key.clone(),
             x402_config:        config.x402.clone(),
             max_context_tokens: config.inference.max_context_length,
+            job_timeout_ms:     config.persistence.job_timeout_secs.saturating_mul(1000),
             started_at_ms:      now_ms(),
 
             engine: engine_ref,
