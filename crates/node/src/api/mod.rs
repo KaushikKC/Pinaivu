@@ -45,6 +45,12 @@ use crate::identity::NodeIdentity;
 use context::store::StoredMessage;
 use persistence::{JobMetrics, JobRecord, JobStatus};
 
+mod error;
+mod support;
+
+pub(crate) use error::ApiError;
+use support::{cors_headers, preflight, trim_context_window, REPLAY_WINDOW_SECS};
+
 // ---------------------------------------------------------------------------
 // Shared state
 // ---------------------------------------------------------------------------
@@ -58,8 +64,9 @@ pub type ApiState = crate::state::NodeState;
 // API key authentication
 // ---------------------------------------------------------------------------
 
-/// Returns `Ok(())` when auth passes, `Err(Response)` with 401 when it fails.
-fn check_api_key(headers: &HeaderMap, api_key: &str) -> Result<(), Response> {
+/// Returns `Ok(())` when auth passes, `Err(ApiError::Unauthorized)` otherwise.
+/// Callers render the error with `.into_response()`.
+fn check_api_key(headers: &HeaderMap, api_key: &str) -> Result<(), ApiError> {
     if api_key.is_empty() {
         return Ok(()); // auth disabled
     }
@@ -76,81 +83,8 @@ fn check_api_key(headers: &HeaderMap, api_key: &str) -> Result<(), Response> {
 
     match provided {
         Some(key) if key == api_key => Ok(()),
-        _ => {
-            let body = serde_json::json!({
-                "error": { "message": "Unauthorized — valid API key required", "type": "auth_error" }
-            });
-            let mut headers = cors_headers();
-            headers.insert("WWW-Authenticate", "Bearer".parse().unwrap());
-            Err((StatusCode::UNAUTHORIZED, headers, Json(body)).into_response())
-        }
+        _ => Err(ApiError::Unauthorized),
     }
-}
-
-// ---------------------------------------------------------------------------
-// Replay protection
-// ---------------------------------------------------------------------------
-
-/// 5-minute replay window for inference request ids.
-const REPLAY_WINDOW_SECS: u64 = 300;
-
-// ---------------------------------------------------------------------------
-// Context window trimming
-// ---------------------------------------------------------------------------
-
-/// Estimate token count for a string: 1 token ≈ 4 characters.
-fn estimate_tokens(s: &str) -> u32 {
-    ((s.len() as f32) / 4.0).ceil() as u32
-}
-
-/// Trim `cw.recent_messages` from the oldest end until the estimated total
-/// token count fits within `max_tokens`. Returns how many messages were dropped.
-fn trim_context_window(cw: &mut ContextWindow, max_tokens: u32) -> usize {
-    if max_tokens == 0 {
-        return 0;
-    }
-
-    let system_tokens = cw.system_prompt.as_deref()
-        .map(estimate_tokens)
-        .unwrap_or(0);
-    let budget = max_tokens.saturating_sub(system_tokens);
-
-    // Walk from newest to oldest, keeping as many messages as fit.
-    let mut used = 0u32;
-    let mut keep_from = cw.recent_messages.len();
-
-    for (i, msg) in cw.recent_messages.iter().enumerate().rev() {
-        let toks = estimate_tokens(&msg.content) + 4; // +4 for role overhead
-        if used + toks > budget {
-            keep_from = i + 1;
-            break;
-        }
-        used += toks;
-        if i == 0 { keep_from = 0; }
-    }
-
-    let dropped = keep_from;
-    if dropped > 0 {
-        cw.recent_messages.drain(..dropped);
-        crate::metrics::CONTEXT_TRIMS_TOTAL.inc();
-    }
-    dropped
-}
-
-// ---------------------------------------------------------------------------
-// CORS helpers
-// ---------------------------------------------------------------------------
-
-fn cors_headers() -> HeaderMap {
-    let mut h = HeaderMap::new();
-    h.insert("Access-Control-Allow-Origin",  "*".parse().unwrap());
-    h.insert("Access-Control-Allow-Methods", "GET, POST, OPTIONS".parse().unwrap());
-    h.insert("Access-Control-Allow-Headers", "Content-Type, Authorization".parse().unwrap());
-    h
-}
-
-async fn preflight() -> impl IntoResponse {
-    (StatusCode::NO_CONTENT, cors_headers())
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +371,7 @@ async fn chat_completions_handler(
     headers:      HeaderMap,
     Json(body):   Json<ChatCompletionRequest>,
 ) -> Response {
-    if let Err(r) = check_api_key(&headers, &state.api_key) { return r; }
+    if let Err(e) = check_api_key(&headers, &state.api_key) { return e.into_response(); }
 
     let request_id: RequestId = uuid::Uuid::new_v4();
     let chat_id  = format!("chatcmpl-{}", hex::encode(&request_id.as_bytes()[..8]));
@@ -450,10 +384,7 @@ async fn chat_completions_handler(
     if state.nonce_store.check_and_set(request_id, REPLAY_WINDOW_SECS).await {
         crate::metrics::REPLAY_REJECTED_TOTAL.inc();
         crate::metrics::REQUESTS_TOTAL.with_label_values(&["chat", "replay"]).inc();
-        let err = serde_json::json!({
-            "error": { "message": "duplicate request_id — already processed", "type": "conflict" }
-        });
-        return (StatusCode::CONFLICT, cors_headers(), Json(err)).into_response();
+        return ApiError::Replay.into_response();
     }
 
     let (mut context_window, prompt) = messages_to_context(&body.messages);
@@ -474,12 +405,7 @@ async fn chat_completions_handler(
         Err(_) => {
             crate::metrics::CONCURRENT_REQUESTS.dec();
             crate::metrics::REQUESTS_TOTAL.with_label_values(&["chat", "capacity"]).inc();
-            let err = serde_json::json!({
-                "error": { "message": "node at capacity — retry shortly", "type": "capacity_error" }
-            });
-            let mut h = cors_headers();
-            h.insert("Retry-After", "5".parse().unwrap());
-            return (StatusCode::SERVICE_UNAVAILABLE, h, Json(err)).into_response();
+            return ApiError::Capacity.into_response();
         }
     };
 
@@ -507,10 +433,7 @@ async fn chat_completions_handler(
             state.job_store.mark(request_id, JobStatus::Failed).await.ok();
             crate::metrics::JOBS_TOTAL.with_label_values(&["failed"]).inc();
             error!(%e, "chat completions inference failed");
-            let err = serde_json::json!({
-                "error": { "message": e.to_string(), "type": "internal_error" }
-            });
-            return (StatusCode::INTERNAL_SERVER_ERROR, cors_headers(), Json(err)).into_response();
+            return ApiError::Upstream(e.to_string()).into_response();
         }
     };
     crate::metrics::CONCURRENT_REQUESTS.dec();
@@ -735,7 +658,7 @@ async fn infer_handler(
     Json(body):   Json<InferRequest>,
 ) -> Response {
     // ── API key auth ──────────────────────────────────────────────────────────
-    if let Err(r) = check_api_key(&headers, &state.api_key) { return r; }
+    if let Err(e) = check_api_key(&headers, &state.api_key) { return e.into_response(); }
 
     // ── x402 payment gate ─────────────────────────────────────────────────────
     let x402_payer = match crate::x402::check_payment(&headers, &state.x402_config).await {
@@ -759,8 +682,7 @@ async fn infer_handler(
     if state.nonce_store.check_and_set(request_id, REPLAY_WINDOW_SECS).await {
         crate::metrics::REPLAY_REJECTED_TOTAL.inc();
         crate::metrics::REQUESTS_TOTAL.with_label_values(&["infer", "replay"]).inc();
-        let err = serde_json::json!({"error": "duplicate request_id — already processed"});
-        return (StatusCode::CONFLICT, cors_headers(), Json(err)).into_response();
+        return ApiError::Replay.into_response();
     }
 
     // ── Load conversation history from context store ───────────────────────────
@@ -796,10 +718,7 @@ async fn infer_handler(
         Err(_) => {
             crate::metrics::CONCURRENT_REQUESTS.dec();
             crate::metrics::REQUESTS_TOTAL.with_label_values(&["infer", "capacity"]).inc();
-            let err = serde_json::json!({"error": "node at capacity — retry shortly"});
-            let mut h = cors_headers();
-            h.insert("Retry-After", "5".parse().unwrap());
-            return (StatusCode::SERVICE_UNAVAILABLE, h, Json(err)).into_response();
+            return ApiError::Capacity.into_response();
         }
     };
 
@@ -826,8 +745,7 @@ async fn infer_handler(
             state.job_store.mark(request_id, JobStatus::Failed).await.ok();
             crate::metrics::JOBS_TOTAL.with_label_values(&["failed"]).inc();
             error!(%e, "inference failed");
-            let msg = format!("{{\"error\":\"{e}\"}}\n");
-            return (StatusCode::INTERNAL_SERVER_ERROR, cors_headers(), msg).into_response();
+            return ApiError::Upstream(e.to_string()).into_response();
         }
     };
     crate::metrics::CONCURRENT_REQUESTS.dec();
@@ -1078,7 +996,7 @@ async fn infer_encrypted_handler(
     headers:      HeaderMap,
     Json(body):   Json<InferEncryptedRequest>,
 ) -> Response {
-    if let Err(r) = check_api_key(&headers, &state.api_key) { return r; }
+    if let Err(e) = check_api_key(&headers, &state.api_key) { return e.into_response(); }
 
     let client_pub_bytes = match hex::decode(&body.client_pubkey_x25519) {
         Ok(b) => b,
@@ -1097,17 +1015,14 @@ async fn infer_encrypted_handler(
 
     let ciphertext = match BASE64.decode(&body.prompt_encrypted) {
         Ok(b) => b,
-        Err(_) => return (StatusCode::BAD_REQUEST, cors_headers(),
-            "{\"error\":\"invalid prompt_encrypted base64\"}\n").into_response(),
+        Err(_) => return ApiError::BadRequest("invalid prompt_encrypted base64".into()).into_response(),
     };
     let nonce_bytes = match BASE64.decode(&body.prompt_nonce) {
         Ok(b) => b,
-        Err(_) => return (StatusCode::BAD_REQUEST, cors_headers(),
-            "{\"error\":\"invalid prompt_nonce base64\"}\n").into_response(),
+        Err(_) => return ApiError::BadRequest("invalid prompt_nonce base64".into()).into_response(),
     };
     if nonce_bytes.len() != 12 {
-        return (StatusCode::BAD_REQUEST, cors_headers(),
-            "{\"error\":\"nonce must be 12 bytes\"}\n").into_response();
+        return ApiError::BadRequest("nonce must be 12 bytes".into()).into_response();
     }
 
     let key    = Key::<Aes256Gcm>::from_slice(&aes_key_bytes);
@@ -1117,14 +1032,12 @@ async fn infer_encrypted_handler(
         Ok(p) => p,
         Err(_) => {
             warn!(%body.model_id, "AES-GCM decryption failed");
-            return (StatusCode::BAD_REQUEST, cors_headers(),
-                "{\"error\":\"decryption failed\"}\n").into_response();
+            return ApiError::BadRequest("decryption failed".into()).into_response();
         }
     };
     let prompt = match String::from_utf8(plaintext_bytes) {
         Ok(s) => s,
-        Err(_) => return (StatusCode::BAD_REQUEST, cors_headers(),
-            "{\"error\":\"decrypted prompt is not valid UTF-8\"}\n").into_response(),
+        Err(_) => return ApiError::BadRequest("decrypted prompt is not valid UTF-8".into()).into_response(),
     };
 
     let request_id: RequestId = uuid::Uuid::new_v4();
@@ -1140,8 +1053,7 @@ async fn infer_encrypted_handler(
         Ok(v)  => v,
         Err(e) => {
             error!(%e, "encrypted inference failed");
-            let msg = format!("{{\"error\":\"{e}\"}}\n");
-            return (StatusCode::INTERNAL_SERVER_ERROR, cors_headers(), msg).into_response();
+            return ApiError::Upstream(e.to_string()).into_response();
         }
     };
 
