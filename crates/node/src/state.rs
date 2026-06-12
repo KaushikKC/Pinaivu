@@ -74,6 +74,8 @@ pub struct NodeStateInner {
     pub x402_config:        X402Section,
     /// Maximum token budget for the context window sent to the model.
     pub max_context_tokens: u32,
+    /// Deadline applied to each dispatched inference job, in milliseconds.
+    pub job_timeout_ms:     u64,
     /// Unix-millis timestamp captured when the node assembled its services.
     pub started_at_ms:      u64,
 
