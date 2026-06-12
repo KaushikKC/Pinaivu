@@ -28,7 +28,9 @@ use common::{
 // The shared-state registries and the `NodeState` DI container now live in
 // `state.rs` — the single source of truth shared with the HTTP API layer.
 use crate::state::{now_ms, BidCollectors, NodeState, NodeStateInner, ResponseCollectors};
-use persistence::{InMemoryJobStore, InMemoryPeerStore, JobStore, PeerStore};
+use persistence::{
+    InMemoryJobStore, InMemoryNonceStore, InMemoryPeerStore, JobStore, NonceStore, PeerStore,
+};
 
 use crate::identity::NodeIdentity;
 use reputation::{GossipReputationStore, LocalReputationStore, ReputationStore};
@@ -548,13 +550,13 @@ impl DeAIDaemon {
         // we log and fall back to in-memory, mirroring the context-store pattern.
         let peer_store  = build_peer_store(&config).await;
         let job_store   = build_job_store(&config).await;
+        let nonce_store = build_nonce_store(&config).await;
 
         let bid_collectors:      BidCollectors      = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let response_collectors: ResponseCollectors = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
         // Concurrency guard for inference calls (≥1 slot).
         let inference_sem = Arc::new(tokio::sync::Semaphore::new(config.gpu.concurrent_jobs.max(1)));
-        let seen_ids = Arc::new(tokio::sync::Mutex::new(HashMap::<uuid::Uuid, u64>::new()));
 
         // ── ERC-8004 registration ─────────────────────────────────────────────
         // Best-effort: register this node on Arc chain if an Arc EVM adapter is
@@ -604,7 +606,7 @@ impl DeAIDaemon {
 
             p2p_service,
             inference_sem,
-            seen_ids,
+            nonce_store,
 
             config,
         };
@@ -1025,6 +1027,31 @@ async fn build_job_store(config: &NodeConfig) -> Arc<dyn JobStore> {
             InMemoryJobStore::new()
         }
     }
+}
+
+/// Replay-protection backend. Shares the peer-store backend decision: when the
+/// peer registry is Redis-backed (a shared/multi-replica deployment) the nonce
+/// guard is too, so a replay can't slip past a second replica.
+async fn build_nonce_store(config: &NodeConfig) -> Arc<dyn NonceStore> {
+    use common::config::PeerStoreKind;
+
+    if config.persistence.peer_store == PeerStoreKind::Redis {
+        #[cfg(feature = "redis")]
+        {
+            match persistence::RedisNonceStore::connect(&config.persistence.redis_url).await {
+                Ok(s) => {
+                    info!("nonce store: redis (shared replay guard)");
+                    return s;
+                }
+                Err(e) => warn!(%e, "nonce store: redis connect failed — falling back to in-memory"),
+            }
+        }
+        #[cfg(not(feature = "redis"))]
+        warn!("nonce store: redis requested but binary not built with --features redis — using in-memory");
+    }
+
+    info!("nonce store: in-memory");
+    InMemoryNonceStore::new()
 }
 
 // ---------------------------------------------------------------------------
