@@ -14,7 +14,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tokio::sync::Mutex;
 
 use aes_gcm::{
     Aes256Gcm, Key, Nonce,
@@ -92,26 +91,8 @@ fn check_api_key(headers: &HeaderMap, api_key: &str) -> Result<(), Response> {
 // Replay protection
 // ---------------------------------------------------------------------------
 
-/// Returns `true` if this request_id was already seen within the last 5 minutes.
-/// Inserts the id on first call. Prunes expired entries opportunistically.
-async fn check_and_mark_seen(id: uuid::Uuid, seen: &Mutex<HashMap<uuid::Uuid, u64>>) -> bool {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let expiry = now + 300; // 5-minute replay window
-
-    let mut map = seen.lock().await;
-
-    // Opportunistic cleanup: remove entries that have expired.
-    map.retain(|_, exp| *exp > now);
-
-    if map.contains_key(&id) {
-        return true; // duplicate
-    }
-    map.insert(id, expiry);
-    false
-}
+/// 5-minute replay window for inference request ids.
+const REPLAY_WINDOW_SECS: u64 = 300;
 
 // ---------------------------------------------------------------------------
 // Context window trimming
@@ -466,7 +447,7 @@ async fn chat_completions_handler(
     let temp     = body.temperature.unwrap_or(0.7);
 
     // ── Replay protection ─────────────────────────────────────────────────────
-    if check_and_mark_seen(request_id, &state.seen_ids).await {
+    if state.nonce_store.check_and_set(request_id, REPLAY_WINDOW_SECS).await {
         crate::metrics::REPLAY_REJECTED_TOTAL.inc();
         crate::metrics::REQUESTS_TOTAL.with_label_values(&["chat", "replay"]).inc();
         let err = serde_json::json!({
@@ -775,7 +756,7 @@ async fn infer_handler(
     let request_id: RequestId = uuid::Uuid::new_v4();
 
     // ── Replay protection ─────────────────────────────────────────────────────
-    if check_and_mark_seen(request_id, &state.seen_ids).await {
+    if state.nonce_store.check_and_set(request_id, REPLAY_WINDOW_SECS).await {
         crate::metrics::REPLAY_REJECTED_TOTAL.inc();
         crate::metrics::REQUESTS_TOTAL.with_label_values(&["infer", "replay"]).inc();
         let err = serde_json::json!({"error": "duplicate request_id — already processed"});
