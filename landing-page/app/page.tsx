@@ -177,16 +177,9 @@ export default function Home() {
             href="#top"
             className="flex items-center gap-2.5 whitespace-nowrap font-mono text-[13px] font-semibold uppercase tracking-[0.8px]"
           >
-            <span className="grid h-[22px] w-[22px] place-items-center">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="animate-[slow-spin_22s_linear_infinite]">
-                <circle cx="12" cy="12" r="10"/>
-                <circle cx="12" cy="12" r="5"/>
-                <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
-                <line x1="12" y1="2" x2="12" y2="6"/>
-                <line x1="12" y1="18" x2="12" y2="22"/>
-                <line x1="2" y1="12" x2="6" y2="12"/>
-                <line x1="18" y1="12" x2="22" y2="12"/>
-              </svg>
+            <span className="grid h-[22px] w-[22px] place-items-center overflow-hidden rounded-[5px]">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/Pinaivu_logo.jpg" alt="Pinaivu AI logo" width={22} height={22} className="h-full w-full object-cover" />
             </span>
             Pinaivu AI
           </a>
@@ -952,10 +945,8 @@ export default function Home() {
       {/* FOOTER */}
       <footer className="flex flex-wrap items-center justify-between gap-5 border-t border-line px-(--content-pad) py-12 max-w-(--content-max) mx-auto">
         <div className="flex items-center gap-2.5 font-mono text-[12px] font-medium tracking-[0.08em] uppercase">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="5"/>
-            <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
-          </svg>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/Pinaivu_logo.jpg" alt="Pinaivu AI logo" width={18} height={18} className="rounded-[4px]" />
           Pinaivu AI
         </div>
         <div className="font-mono text-[9px] tracking-[0.22em] uppercase text-fg-3">The Inference Network · Est. 2026 · Licensed MIT</div>

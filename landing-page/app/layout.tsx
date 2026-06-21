@@ -12,6 +12,11 @@ export const metadata: Metadata = {
   title: "Pinaivu AI — Verifiable Inference, Settled on Sui",
   description:
     "Pinaivu AI grounds every guarantee in Ed25519 signatures and SHA-256 Merkle proofs. Payments settle on Sui, encrypted memory lives on Walrus, and sign-in is seedless via zkLogin.",
+  icons: {
+    icon: "/Pinaivu_logo.jpg",
+    shortcut: "/Pinaivu_logo.jpg",
+    apple: "/Pinaivu_logo.jpg",
+  },
 };
 
 export default function RootLayout({
