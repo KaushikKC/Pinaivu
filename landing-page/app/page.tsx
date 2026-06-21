@@ -102,12 +102,12 @@ function WaitlistModal({ onClose }: { onClose: () => void }) {
           <div className="flex flex-col items-start gap-3">
             <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-fg opacity-80"><path d="M5 12l5 5 9-9"/><circle cx="12" cy="12" r="10"/></svg>
             <h3 className="m-0 font-fraunces text-[25px] font-medium leading-[1.2] text-fg">You&apos;re on the list.</h3>
-            <p className="m-0 text-[14px] leading-[1.6] text-fg-2">We&apos;ll reach out when early access opens. Phase C is live — Ed25519 identity and signed-receipt settlement work today.</p>
+            <p className="m-0 text-[14px] leading-[1.6] text-fg-2">We&apos;ll reach out when early access opens. Live on Sui — zkLogin sign-in, Ed25519 receipts and on-chain settlement work today.</p>
           </div>
         ) : (
           <>
             <h3 className="mb-2.5 mt-0 font-fraunces text-[25px] font-medium leading-[1.2] text-fg">Early access to Pinaivu AI</h3>
-            <p className="mb-6 mt-0 text-[14px] leading-[1.6] text-fg-2">Be among the first to run a node or use the network. No token, no chain required.</p>
+            <p className="mb-6 mt-0 text-[14px] leading-[1.6] text-fg-2">Be among the first to run a node or use the network. Sign in with zkLogin, settle on Sui.</p>
             <form onSubmit={submit} className="flex flex-col gap-2.5">
               <div className="flex overflow-hidden border border-line-h">
                 <input
@@ -232,7 +232,7 @@ export default function Home() {
           <div className="flex flex-col items-center gap-5">
             <div data-float className="inline-flex items-center gap-2.5 rounded-full border border-line-2 bg-fg-6 px-4 py-[7px] font-mono text-[10px] font-medium uppercase tracking-[0.25em] text-fg backdrop-blur-md shadow-[0_4px_24px_rgba(0,0,0,0.2)]">
               <span className="size-1.5 rounded-full bg-fg shadow-[0_0_6px_currentColor] animate-pulse-dot"></span>
-              Phase C · Protocol v2.0 · Live
+              Built on Sui · Walrus · Live
             </div>
             <div data-float className="flex items-center gap-4 font-mono text-[10px] uppercase tracking-[0.35em] text-fg-3">
               <span className="h-px w-8 bg-linear-to-r from-transparent to-fg-4"></span>
@@ -244,11 +244,11 @@ export default function Home() {
           <h1 className="max-w-[1100px] overflow-visible px-6 text-center font-fraunces text-[115px] leading-[0.9] tracking-[-4px] text-fg max-md:px-5 max-md:text-[64px] max-sm:text-[44px]">
             <span className="block opacity-0 animate-[hero-title-in_.9s_cubic-bezier(.16,1,.3,1)_.2s_forwards]">Trust&nbsp;from</span>
             <span className="block font-playfair italic font-normal text-fg-2 opacity-0 animate-[hero-title-in_.9s_cubic-bezier(.16,1,.3,1)_.42s_forwards]">cryptography,</span>
-            <span className="block opacity-0 animate-[hero-title-in_.9s_cubic-bezier(.16,1,.3,1)_.64s_forwards]">not chains.</span>
+            <span className="block opacity-0 animate-[hero-title-in_.9s_cubic-bezier(.16,1,.3,1)_.64s_forwards]">settled on Sui.</span>
           </h1>
 
           <p className="max-w-[750px] text-[18px] leading-[1.75] text-fg-2 opacity-0 animate-fade-in-1">
-            Pinaivu AI grounds every guarantee in <strong className="text-fg font-medium bg-fg-6 px-1.5 py-0.5 rounded border border-line">Ed25519 signatures</strong> and <strong className="text-fg font-medium bg-fg-6 px-1.5 py-0.5 rounded border border-line">SHA-256 Merkle proofs</strong> — not a coordinator, not a token. Settlement, storage, and anchoring are <strong className="text-fg font-medium">pluggable</strong>. Swap a TOML value, not your stack.
+            Pinaivu AI grounds every guarantee in <strong className="text-fg font-medium bg-fg-6 px-1.5 py-0.5 rounded border border-line">Ed25519 signatures</strong> and <strong className="text-fg font-medium bg-fg-6 px-1.5 py-0.5 rounded border border-line">SHA-256 Merkle proofs</strong>. Payments settle on <strong className="text-fg font-medium">Sui</strong>, encrypted memory lives on <strong className="text-fg font-medium">Walrus</strong>, and sign-in is seedless via <strong className="text-fg font-medium">zkLogin</strong>.
           </p>
 
           <div className="mt-4 flex flex-wrap justify-center gap-4 opacity-0 animate-fade-in-2">
@@ -282,6 +282,9 @@ export default function Home() {
               <span className="inline-flex items-center gap-2 before:content-['◆'] before:text-fg before:text-[10px]">LIBP2P · QUIC · NOISE</span>
               <span className="inline-flex items-center gap-2 before:content-['◆'] before:text-fg before:text-[10px]">IPFS · WALRUS · LOCAL</span>
               <span className="inline-flex items-center gap-2 before:content-['◆'] before:text-fg before:text-[10px]">FREE · RECEIPT · CHANNEL · SUI · EVM</span>
+              <span className="inline-flex items-center gap-2 before:content-['◆'] before:text-fg before:text-[10px]">ZKLOGIN ONBOARDING</span>
+              <span className="inline-flex items-center gap-2 before:content-['◆'] before:text-fg before:text-[10px]">SETTLED ON SUI</span>
+              <span className="inline-flex items-center gap-2 before:content-['◆'] before:text-fg before:text-[10px]">WALRUS STORAGE</span>
               <span className="inline-flex items-center gap-2 before:content-['◆'] before:text-fg before:text-[10px]">STANDARD · PRIVATE · FRAGMENTED · MAXIMUM</span>
               <span className="inline-flex items-center gap-2 before:content-['◆'] before:text-fg before:text-[10px]">OFFLINE VERIFIABLE</span>
             </div>
@@ -304,8 +307,8 @@ export default function Home() {
             className="group relative -ml-px -mt-px border border-line px-8 py-10 transition-[background-color,border-color,box-shadow,transform] duration-400ms ease-[cubic-bezier(.16,1,.3,1)] hover:bg-bg-1 hover:border-line-h hover:shadow-[0_0_60px_var(--fg-5)_inset,0_20px_60px_rgba(0,0,0,.35)] hover:z-1 [&.in-view_.stat-bar]:w-(--pct,60%)"
             style={{ '--pct': '100%' } as React.CSSProperties}
           >
-            <div className="mb-4 flex items-baseline gap-1 font-fraunces text-[38px] lg:text-[54px] leading-none tracking-[-2px]"><span data-count="0">0</span></div>
-            <div className="flex items-center justify-between font-mono text-[9px] uppercase tracking-[2.25px] text-fg-3">Blockchains required <span className="inline-flex items-center gap-1 font-semibold text-fg">Optional</span></div>
+            <div className="mb-4 flex items-baseline gap-1 font-fraunces text-[38px] lg:text-[54px] leading-none tracking-[-2px]"><span>Sui</span></div>
+            <div className="flex items-center justify-between font-mono text-[9px] uppercase tracking-[2.25px] text-fg-3">Settlement layer <span className="inline-flex items-center gap-1 font-semibold text-fg">On-chain</span></div>
             <div className="stat-bar absolute bottom-0 left-0 h-[2px] w-0 bg-fg transition-[width] duration-[1600ms] ease-[cubic-bezier(.2,.8,.2,1)] delay-100"></div>
           </div>
           <div
@@ -347,20 +350,20 @@ export default function Home() {
           <div className="reveal col-span-2 md:col-span-4 md:row-span-3 -ml-px -mt-px border border-line bg-bg p-7 md:p-10">
             <div className="flex items-center justify-between gap-4 font-mono text-[10px] uppercase tracking-[0.25em] text-fg-3">
               <span>Abstract · Line 01</span>
-              <span className="rounded-full border border-line-2 bg-fg-6 px-3 py-1 text-fg-2">Self-sufficient</span>
+              <span className="rounded-full border border-line-2 bg-fg-6 px-3 py-1 text-fg-2">Sui-native</span>
             </div>
             <h2 className="mt-4 font-fraunces text-[22px] lg:text-[36px] leading-[1.14] tracking-[-0.022em] text-fg [font-variation-settings:'opsz'_144]">
               Every prior inference marketplace grounds trust in a{" "}
               <span className="text-fg-2 italic font-light font-playfair">coordinator</span> or a{" "}
               <span className="text-fg-2 italic font-light font-playfair">specific chain</span>. Pinaivu AI takes a third path: trust is grounded{" "}
               <span className="rounded bg-inv px-1.5 text-inv-fg font-playfair">exclusively in cryptography</span> — Ed25519 identity, SHA-256 Merkle proofs,
-              AES-256-GCM sessions. Any chain becomes an{" "}
-              <span className="text-fg-2 italic font-light font-playfair">optional anchor</span> on a system that already works.
+              AES-256-GCM sessions. Payments settle on{" "}
+              <span className="text-fg-2 italic font-light font-playfair">Sui</span>, with encrypted memory and receipts on Walrus.
             </h2>
             <div className="mt-6 flex flex-wrap gap-4 font-mono text-[10px] uppercase tracking-[0.3em] text-fg-3">
               <span className="before:content-['◆_'] before:text-fg">Offline verifiable</span>
               <span className="before:content-['◆_'] before:text-fg">No coordinator</span>
-              <span className="before:content-['◆_'] before:text-fg">Chain-optional</span>
+              <span className="before:content-['◆_'] before:text-fg">Settled on Sui</span>
             </div>
           </div>
 
@@ -422,8 +425,8 @@ export default function Home() {
           {/* Zero chain */}
           <div className="reveal reveal-d2 col-span-1 md:col-span-1 grid place-items-center -ml-px -mt-px border border-line bg-bg-1 p-5 text-center">
             <div className="font-mono text-[9.5px] uppercase tracking-[0.22em] text-fg-3">
-              <div className="mb-1 text-fg tracking-[0.15em] text-2xl">∅</div>
-              Zero blockchain required
+              <div className="mb-1 text-fg tracking-[0.15em] text-2xl">◆</div>
+              Settled on Sui
             </div>
           </div>
 
@@ -543,7 +546,7 @@ export default function Home() {
               </div>
               <div className="relative my-3 h-[140px] grid place-items-center"><div className="viz-lock"><div className="viz-lock-shape"></div></div></div>
               <h3 className="mb-3 font-fraunces font-normal text-[26px] leading-[1.1] tracking-[-0.02em] [font-variation-settings:'opsz'_144]">One token, one ecosystem</h3>
-              <p className="text-[14px] text-fg-2 leading-[1.65]">Bittensor collapses without TAO. Every prior decentralised inference system grounds trust in a specific chain, token and validator set. Pinaivu AI&apos;s trust model is self-sufficient; any chain is an optional settlement adapter selected in a TOML file.</p>
+              <p className="text-[14px] text-fg-2 leading-[1.65]">Bittensor collapses without TAO. Every prior decentralised inference system grounds trust in a specific chain, token and validator set. Pinaivu AI settles on Sui by default, yet settlement stays pluggable — any chain is an adapter selected in config, while trust itself rests on cryptography.</p>
             </div>
             <Corner pos="tl"/><Corner pos="tr"/><Corner pos="bl"/><Corner pos="br"/>
           </div>
@@ -573,7 +576,7 @@ export default function Home() {
         </div>
         <div className="grid grid-cols-3 gap-0 px-(--content-pad) max-w-(--content-max) mx-auto max-[1280px]:grid-cols-2 max-[720px]:grid-cols-1">
           {[
-            { delay: '', layer: 'L - 06 · Application', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>, title: 'OpenAI-compatible surface', body: 'TypeScript SDK, drop-in HTTP API, Web UI. Change the base URL; keep your code. Streaming, sessions and proof retrieval are native.', foot: 'TS SDK · HTTP · Web UI' },
+            { delay: '', layer: 'L - 06 · Application', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>, title: 'OpenAI-compatible surface', body: 'Sign in with zkLogin — no seed phrase. Then a drop-in OpenAI-compatible API, TypeScript SDK and Web UI: change the base URL, keep your code. Streaming, sessions and proof retrieval are native.', foot: 'zkLogin · TS SDK · HTTP' },
             { delay: 'reveal-d1', layer: 'L - 05 · Session', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>, title: 'E2E encrypted memory', body: 'Full history C is AES-256-GCM encrypted under a client-held K. The GPU node decrypts only the active context window — never C, never K.', foot: 'AES-GCM · X25519 · Portable' },
             { delay: 'reveal-d2', layer: 'L - 04 · Reputation', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="12" r="2"/><path d="M12 10V8M12 16v-2M10 12H8M16 12h-2"/></svg>, title: 'Merkle tree, gossiped', body: 'Every node keeps a Merkle tree of its signed proofs. The root is broadcast over libp2p gossipsub every 10 min. Chain anchoring is optional.', foot: 'SHA-256 · Gossipsub · O(log n)' },
             { delay: '', layer: 'L - 03 · Marketplace', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 12l9-9 9 9-9 9z"/><path d="M8 12h8M12 8v8"/></svg>, title: '200ms sealed-bid auction', body: 'Client broadcasts request; nodes pass six cheap-to-expensive checks and submit a bid. Composite score (0.4×price + 0.3×latency + 0.3×rep) picks the winner.', foot: 'libp2p · Sealed-bid · First-price' },
@@ -836,7 +839,7 @@ export default function Home() {
             { delay: 'reveal-d2', id: 'T · 03', title: 'Ed25519 Identity', body: 'Every node is an Ed25519 keypair. The libp2p PeerId is derived from pk_N — no separate account or wallet needed. 128-bit security per RFC 8032.', tags: ['Ed25519','RFC 8032','128-bit security'] },
             { delay: '', id: 'T · 04', title: 'ProofOfInference', body: "A signed execution receipt bound to (model, tokens, latency, H_in, H_out). Verifiable offline with only the node's public key. Constant-time O(1) verification, no network call.", tags: ['Ed25519 σ','SHA-256 H_in/H_out','Offline'] },
             { delay: 'reveal-d1', id: 'T · 05', title: 'AES-256-GCM Sessions', body: 'Session context encrypted under a client-held key K derived from X25519 DH. The GPU node never sees K — only the current-turn context window, zeroed from RAM after inference.', tags: ['AES-256-GCM','X25519','96-bit nonce'] },
-            { delay: 'reveal-d2', id: 'T · 06', title: 'Settlement Adapters', body: 'Five adapters behind one interface: free, signed-receipt, off-chain payment channel, Sui (Phase D), EVM (Phase E). All selected by a single TOML key — same binary, zero code changes.', tags: ['free','receipt','channel','sui','evm'] },
+            { delay: 'reveal-d2', id: 'T · 06', title: 'Settlement on Sui', body: 'Sui Move escrow settles payments on-chain against the signed proof — live today. Behind one interface sit five adapters: free, signed-receipt, off-chain payment channel, Sui and EVM, selected by a single TOML key. Same binary, zero code changes.', tags: ['sui move','free','receipt','channel','evm'] },
           ] as const).map(({ delay, id, title, body, tags }) => (
             <div key={id} data-card className={`group reveal ${delay} relative -ml-px -mt-px min-h-[260px] overflow-hidden border border-line px-9 pt-10 pb-9 transition-all duration-400ms ease-out after:absolute after:top-0 after:left-0 after:right-0 after:h-0.5 after:bg-fg after:scale-x-0 after:origin-left after:transition-transform after:duration-500 after:ease-out hover:border-line-h hover:bg-bg-2 hover:after:scale-x-100`}>
               <div className="mb-5 flex items-start justify-between gap-4">
@@ -903,7 +906,7 @@ export default function Home() {
         <div className="grid grid-cols-4 gap-0 px-(--content-pad) max-w-(--content-max) mx-auto max-[1024px]:grid-cols-2 max-[720px]:grid-cols-1">
           {([
             { delay: '', active: true, p: '1', tag: 'Live', date: 'Phase C · April 2026', title: 'Cryptographic Core', items: ['Ed25519 identity + ProofOfInference','Merkle reputation tree + gossip','Free + signed-receipt settlement','Local + IPFS + Walrus storage'] },
-            { delay: 'reveal-d1', active: false, p: '0', tag: 'Queued', date: 'Phase D · H2 2026', title: 'Sui Settlement', items: ['Move escrow smart contract','SuiSettlement adapter live','On-chain proof verification','Reputation anchoring on Sui'] },
+            { delay: 'reveal-d1', active: true, p: '1', tag: 'Live', date: 'Phase D · Live', title: 'Sui Settlement', items: ['Move escrow smart contract','SuiSettlement adapter live','On-chain proof verification','Reputation anchoring on Sui'] },
             { delay: 'reveal-d2', active: false, p: '0', tag: 'Queued', date: 'Phase E · H1 2027', title: 'EVM Settlement', items: ['Solidity escrow contract · Base L2','EvmSettlement adapter live','Multi-chain settlement matrix','TOML-selectable chains'] },
             { delay: 'reveal-d3', active: false, p: '0', tag: 'Queued', date: 'Phase F · H2 2027', title: 'On-Chain Channels', items: ['Payment channels — on-chain close','50× gas amortisation at 100 req/session','Full gossip protocol live','Governance parameterisation'] },
           ] as const).map(({ delay, active, p, tag, date, title, items }) => (
@@ -933,7 +936,7 @@ export default function Home() {
           <div className="absolute inset-0 pointer-events-none [background:radial-gradient(ellipse_at_50%_120%,var(--fg-5),transparent_60%)]"></div>
           <div className="relative mb-7 font-mono text-[10px] tracking-[0.35em] uppercase text-fg-3">— 010 · Start Here</div>
           <h2 className="relative mb-5 font-fraunces font-normal text-[38px] lg:text-[64px] leading-[0.95] tracking-[-0.035em] [font-variation-settings:'opsz'_144] [&_em]:font-light [&_em]:italic [&_em]:text-fg-2">Be first on the network.<br/><em>Join the waitlist.</em></h2>
-          <p className="relative mx-auto mb-9 max-w-[500px] text-base leading-[1.6] text-fg-2">No credit card. No token. No permission. Phase C is live — Ed25519 identity, Merkle reputation and signed-receipt settlement work today, with zero blockchain required.</p>
+          <p className="relative mx-auto mb-9 max-w-[500px] text-base leading-[1.6] text-fg-2">No credit card, no seed phrase. Sign in with zkLogin, settle on Sui, and keep encrypted memory on Walrus — Ed25519 receipts and on-chain settlement work today.</p>
           <div className="relative flex flex-wrap justify-center gap-2.5">
             <button className="relative inline-flex items-center gap-2.5 overflow-hidden isolate rounded-full bg-inv px-6 py-3.5 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-inv-fg [transition:background_.25s,color_.25s,border-color_.25s]" onClick={() => setShowWaitlist(true)}>
               <span className="relative z-2">Join Waitlist</span>
@@ -956,11 +959,11 @@ export default function Home() {
           Pinaivu AI
         </div>
         <div className="font-mono text-[9px] tracking-[0.22em] uppercase text-fg-3">The Inference Network · Est. 2026 · Licensed MIT</div>
-        <ul className="flex list-none gap-5">
-          <li><a href="#" className="font-mono text-[9px] tracking-[0.22em] uppercase text-fg-3 transition-colors duration-300 hover:text-fg">Docs</a></li>
-          <li><a href="#" className="font-mono text-[9px] tracking-[0.22em] uppercase text-fg-3 transition-colors duration-300 hover:text-fg">GitHub</a></li>
-          <li><a href="#" className="font-mono text-[9px] tracking-[0.22em] uppercase text-fg-3 transition-colors duration-300 hover:text-fg">Discord</a></li>
-          <li><a href="#" className="font-mono text-[9px] tracking-[0.22em] uppercase text-fg-3 transition-colors duration-300 hover:text-fg">Twitter</a></li>
+        <ul className="flex list-none gap-5 flex-wrap">
+          <li><a href="https://chat.pinaivu.com/" target="_blank" rel="noopener noreferrer" className="font-mono text-[9px] tracking-[0.22em] uppercase text-fg-3 transition-colors duration-300 hover:text-fg">App</a></li>
+          <li><a href="https://explorer.pinaivu.com/" target="_blank" rel="noopener noreferrer" className="font-mono text-[9px] tracking-[0.22em] uppercase text-fg-3 transition-colors duration-300 hover:text-fg">Explorer</a></li>
+          <li><a href="https://dashboard.pinaivu.com/" target="_blank" rel="noopener noreferrer" className="font-mono text-[9px] tracking-[0.22em] uppercase text-fg-3 transition-colors duration-300 hover:text-fg">Dashboard</a></li>
+          <li><a href="https://docs.pinaivu.com/" target="_blank" rel="noopener noreferrer" className="font-mono text-[9px] tracking-[0.22em] uppercase text-fg-3 transition-colors duration-300 hover:text-fg">Docs</a></li>
           <li><a href="/PinaivuAI_Whitepaper.pdf" target="_blank" rel="noopener noreferrer" className="font-mono text-[9px] tracking-[0.22em] uppercase text-fg-3 transition-colors duration-300 hover:text-fg">Whitepaper</a></li>
         </ul>
       </footer>

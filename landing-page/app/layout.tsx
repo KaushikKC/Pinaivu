@@ -9,9 +9,9 @@ const playfair = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "Pinaivu AI — Cryptographic-Native Inference Protocol",
+  title: "Pinaivu AI — Verifiable Inference, Settled on Sui",
   description:
-    "Pinaivu AI grounds every guarantee in Ed25519 signatures and SHA-256 Merkle proofs — not a coordinator, not a token.",
+    "Pinaivu AI grounds every guarantee in Ed25519 signatures and SHA-256 Merkle proofs. Payments settle on Sui, encrypted memory lives on Walrus, and sign-in is seedless via zkLogin.",
 };
 
 export default function RootLayout({
