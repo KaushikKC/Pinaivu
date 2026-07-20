@@ -9,9 +9,9 @@ const playfair = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "Pinaivu AI · Verifiable Inference, Settled on Arbitrum",
+  title: "Pinaivu AI · Verifiable Inference, Settled on Sui",
   description:
-    "Pinaivu AI grounds every guarantee in Ed25519 signatures and SHA-256 proof receipts. Payments settle on Arbitrum, encrypted memory lives on IPFS, and sign-in is seedless via smart accounts.",
+    "Pinaivu AI grounds every guarantee in Ed25519 signatures and SHA-256 proof receipts. Payments settle on Sui, encrypted memory lives on Walrus, and sign-in is seedless via zkLogin.",
   icons: {
     icon: "/Pinaivu_logo.jpg",
     shortcut: "/Pinaivu_logo.jpg",
